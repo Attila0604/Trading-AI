@@ -49,7 +49,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 /* PILLS */
 .pill{display:inline-block;border-radius:3px;padding:2px 7px;font-size:9px;font-weight:600;letter-spacing:.06em;white-space:nowrap}
 /* SLOT LIST */
-.slot-list{display:flex;flex-direction:column;gap:7px;width:240px;flex-shrink:0}
+.slot-list{display:flex;flex-direction:column;gap:7px;width:240px;min-width:240px;flex-shrink:0}
 .slot-item{background:var(--c);border:1px solid var(--b);border-radius:8px;padding:10px 12px;cursor:pointer;transition:all .2s;opacity:.45}
 .slot-item.enabled{opacity:1}
 .slot-item.selected{background:#f5c51812;border-color:#f5c51877}
@@ -204,10 +204,12 @@ button:hover{filter:brightness(1.15)}
 
   <!-- ═══ ZEITPLAN TAB ═══ -->
   <div id="tab-zeitplan">
-    <div style="display:flex;gap:10px">
+    <div style="display:flex;gap:10px;align-items:flex-start">
 
       <!-- Slot list -->
-      <div class="slot-list" id="slot-list"></div>
+      <div class="slot-list" id="slot-list">
+        <div style="color:var(--muted);font-size:10px;padding:10px">Lade Slots...</div>
+      </div>
 
       <!-- Slot config -->
       <div style="flex:1;overflow-y:auto">
@@ -227,14 +229,14 @@ button:hover{filter:brightness(1.15)}
 
         <!-- Trading Strategy -->
         <div class="card">
-          <div class="card-title">📈 TRADING-STRATEGIE</div>
-          <div class="strat-grid" id="strat-grid"></div>
+          <div class="card-title">TRADING-STRATEGIE</div>
+          <div class="strat-grid" id="strat-grid"><div style="color:var(--muted);font-size:11px;padding:10px">Wird geladen...</div></div>
         </div>
 
         <!-- Entry Strategy -->
         <div class="card">
-          <div class="card-title">🎯 KAUF-STRATEGIE (EINSTIEG)</div>
-          <div class="entry-grid" id="entry-grid"></div>
+          <div class="card-title">KAUF-STRATEGIE (EINSTIEG)</div>
+          <div class="entry-grid" id="entry-grid"><div style="color:var(--muted);font-size:11px;padding:10px">Wird geladen...</div></div>
           <div id="entry-hint" style="margin-top:10px"></div>
         </div>
 
@@ -422,7 +424,7 @@ const ESTRATS=[
   {id:"limit",         name:"Limit Order",     desc:"Warte auf besseren Kurs",            icon:"🎯",color:"#22d3ee"},
   {id:"breakout_entry",name:"Breakout Entry",  desc:"Nach Ausbruchs-Bestätigung",         icon:"🚀",color:"#a855f7"},
   {id:"dca",           name:"DCA Gestaffelt",  desc:"Position in 3 Tranchen aufbauen",    icon:"📊",color:"#10b981"},
-  {id:"pullback",      name:"Pullback Entry",  desc:"Warte auf Korrektur",                icon:"↩",color:"#f97316"},
+  {id:"pullback",      name:"Pullback Entry",  desc:"Warte auf Korrektur",                icon:"PB",color:"#f97316"},
   {id:"ob",            name:"Order Block",     desc:"Institutionelle Zonen",              icon:"🏦",color:"#f5c518"},
 ];
 const TSLOTS=[
@@ -603,6 +605,7 @@ function renderStatusBar(){
 
 // ═══ SLOT CONFIG RENDER ══════════════════════════════════════════════════════
 function renderSlotConfig(){
+  try{
   const c=slotCfg[currentSlot];
   const slot=TSLOTS.find(s=>s.id===currentSlot);
 
@@ -665,6 +668,7 @@ function renderSlotConfig(){
 
   // Assets
   renderAssetChips();
+  }catch(e){console.error("renderSlotConfig error:",e);}
 }
 
 function updateSlider(key,val,unit){
@@ -1139,17 +1143,20 @@ async function pollStatus(){
 
 // ═══ INIT ════════════════════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded",()=>{
-  document.getElementById("init-time").textContent=now();
-  const q=Q();
-  document.getElementById("q-title").textContent=`Quartal Q${q}`;
-  document.getElementById("p${q}-status")?null:null;
-  renderSlotList();
-  selectSlot("london");
-  renderAnalyseAssetChips();
-  selectPeriod("weekly");
-  setMode("semi");
-  pollStatus();
-  setInterval(pollStatus,10000);
+  try{
+    document.getElementById("init-time").textContent=now();
+    const q=Q();
+    document.getElementById("q-title").textContent="Quartal Q"+q;
+    renderSlotList();
+    selectSlot("london");
+    renderAnalyseAssetChips();
+    selectPeriod("weekly");
+    setMode("semi");
+    pollStatus();
+    setInterval(pollStatus,10000);
+  }catch(e){
+    console.error("Init error:",e);
+  }
 });
 </script>
 </body>
