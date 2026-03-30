@@ -1,3 +1,4 @@
+# Trading Multi-Agent v3.1
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
