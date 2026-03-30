@@ -233,12 +233,7 @@ async def dashboard():
     html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
-    html = html.replace("{{MAX_RISK_PCT}}", str(MAX_RISK_PCT))
-    html = html.replace("{{STOP_LOSS_PCT}}", str(STOP_LOSS_PCT))
-    html = html.replace("{{TAKE_PROFIT_PCT}}", str(TAKE_PROFIT_PCT))
-    html = html.replace("{{POSITION_SIZE_EUR}}", str(int(POSITION_SIZE)))
-    html = html.replace("{{STRATEGY}}", STRATEGY)
-    html = html.replace("{{AUTO_TRADE}}", "AN ⚡" if AUTO_TRADE else "AUS")
+    
     return HTMLResponse(content=html)
 
 @app.post("/analyze")
