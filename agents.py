@@ -7,7 +7,7 @@ client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 def call_claude(user_prompt: str, system_prompt: str, web_search: bool = False) -> str:
     kwargs = dict(
-        model="claude-opus-4-5",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1500,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}],
