@@ -4,7 +4,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 DEMO_BASE = "https://demo-api-capital.backend.capital.com/api/v1"
-LIVE_BASE = "https://api-capital.backend.capital/api/v1"
+LIVE_BASE = "https://api-capital.backend.capital.com/api/v1"
 
 
 class CapitalClient:
