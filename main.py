@@ -1,4 +1,3 @@
-# Trading Multi-Agent v3.1
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -16,7 +15,7 @@ from whatsapp import send_whatsapp
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config from ENV ──
+# Config from ENV
 ASSETS          = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500").split(",")
 STRATEGY        = os.getenv("TRADING_STRATEGY", "adaptive")
 MAX_RISK_PCT    = float(os.getenv("MAX_RISK_PCT", "2"))
@@ -25,26 +24,23 @@ TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "3.0"))
 POSITION_SIZE   = float(os.getenv("POSITION_SIZE_EUR", "1000"))
 AUTO_TRADE      = os.getenv("AUTO_TRADE", "false").lower() == "true"
 DATA_DIR        = os.getenv("DATA_DIR", "/app/data")
-MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))          # Mindest-Konfidenz für Auto-Trade
-SCHEDULE_HOURS  = int(os.getenv("SCHEDULE_INTERVAL_HOURS", "1")) # Stündlich
+MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
+SCHEDULE_HOURS  = int(os.getenv("SCHEDULE_INTERVAL_HOURS", "1"))
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
 capital = CapitalClient()
 tracker = ExcelTracker(DATA_DIR)
 
-# ── State ──
 latest_signals   = []
 latest_analysis  = {}
 pipeline_running = False
 schedule_log     = []
 
-# ── Scheduler ──
 scheduler = BackgroundScheduler(timezone="Europe/Vienna")
 
 def scheduled_job():
-    """Wird automatisch alle X Stunden ausgeführt."""
-    log.info(f"⏰ GEPLANTER LAUF | {datetime.now().strftime('%d.%m.%Y %H:%M')} | Intervall: {SCHEDULE_HOURS}h")
+    log.info(f"GEPLANTER LAUF | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     schedule_log.append({"time": datetime.now().isoformat(), "trigger": "scheduler"})
     if len(schedule_log) > 50:
         schedule_log.pop(0)
@@ -65,24 +61,32 @@ async def lifespan(app: FastAPI):
         max_instances=1,
     )
     scheduler.start()
+    # Auto-connect Capital.com beim Start
+    try:
+        connected = await capital.connect()
+        if connected:
+            log.info("Capital.com auto-connect beim Start erfolgreich")
+        else:
+            log.warning("Capital.com auto-connect fehlgeschlagen - prüfe CAPITAL_EMAIL/PASSWORD")
+    except Exception as e:
+        log.warning(f"Capital.com auto-connect Fehler: {e}")
     job = scheduler.get_job("trading_pipeline")
-    next_run = job.next_run_time.strftime("%d.%m.%Y %H:%M") if job else "—"
-    log.info(f"✅ Trading Multi-Agent gestartet | Alle {SCHEDULE_HOURS}h | Nächster Lauf: {next_run}")
+    next_run = job.next_run_time.strftime("%d.%m.%Y %H:%M") if job else "?"
+    log.info(f"Trading Multi-Agent gestartet | Alle {SCHEDULE_HOURS}h | Naechster Lauf: {next_run}")
     send_whatsapp(
-        f"🤖 *Trading-Agent gestartet*\n"
-        f"⏰ Automatische Analyse alle {SCHEDULE_HOURS}h\n"
-        f"📊 Assets: {', '.join(ASSETS)}\n"
-        f"🎯 Strategie: {STRATEGY}\n"
-        f"⚡ Auto-Trade: {'AN ✅' if AUTO_TRADE else 'AUS ⏸'}\n"
-        f"🎚 Min. Konfidenz: {MIN_CONFIDENCE}%\n"
-        f"⏰ Nächster Lauf: {next_run}"
+        f"Trading-Agent gestartet\n"
+        f"Analyse alle {SCHEDULE_HOURS}h\n"
+        f"Assets: {', '.join(ASSETS)}\n"
+        f"Strategie: {STRATEGY}\n"
+        f"Auto-Trade: {'AN' if AUTO_TRADE else 'AUS'}\n"
+        f"Capital.com: {'Verbunden' if capital.is_connected() else 'Getrennt'}\n"
+        f"Naechster Lauf: {next_run}"
     )
     yield
     scheduler.shutdown()
 
 app = FastAPI(title="Trading Multi-Agent v3.0", lifespan=lifespan)
 
-# ── Models ──
 class TradeRequest(BaseModel):
     asset: str
     direction: str
@@ -99,22 +103,16 @@ class AnalyzeRequest(BaseModel):
     position_size: float = POSITION_SIZE
     auto_execute: bool = AUTO_TRADE
 
-# ── Pipeline ──
 async def run_analysis_pipeline(req: AnalyzeRequest):
     global latest_signals, latest_analysis, pipeline_running
     if pipeline_running:
-        log.warning("Pipeline bereits aktiv – überspringe")
+        log.warning("Pipeline bereits aktiv")
         return
     pipeline_running = True
     try:
         ts = datetime.now().strftime("%d.%m.%Y %H:%M")
         log.info(f"PIPELINE START | {ts} | {req.strategy} | {req.assets}")
-        send_whatsapp(
-            f"🚀 *Trading-Pipeline gestartet*\n"
-            f"⏰ {ts}\nStrategie: {req.strategy}\n"
-            f"Assets: {', '.join(req.assets)}\n"
-            f"⚡ Auto-Trade: {'AN' if req.auto_execute else 'AUS'}"
-        )
+        send_whatsapp(f"Pipeline gestartet\n{ts}\nStrategie: {req.strategy}\nAssets: {', '.join(req.assets)}")
 
         result = await run_pipeline(
             assets=req.assets, strategy=req.strategy,
@@ -128,64 +126,45 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         latest_signals = all_signals
         tracker.save_analysis(result)
 
-        # ── WhatsApp Summary ──
         score = result.get("sessionScore", 0)
         overview = result.get("marketOverview", "")
-        msg = f"✅ *Analyse abgeschlossen*\n⏰ {ts}\nScore: {score}/100\n{overview}\n\n"
+        msg = f"Analyse abgeschlossen\n{ts}\nScore: {score}/100\n{overview}\n\n"
 
         strong_signals = [s for s in all_signals if s.get("confidence", 0) >= MIN_CONFIDENCE]
         weak_signals   = [s for s in all_signals if s.get("confidence", 0) < MIN_CONFIDENCE]
 
         for s in all_signals:
-            emoji = "📈" if s["action"] == "buy" else "📉"
-            star  = "⭐ " if s.get("confidence", 0) >= MIN_CONFIDENCE else ""
-            msg  += f"{emoji} {star}*{s['action'].upper()} {s['asset']}* | {s['confidence']}% Konfidenz\n"
-            msg  += f"SL: {s.get('stopLoss',0):.1f}% | TP: {s.get('takeProfit',0):.1f}% | R:R {s.get('riskReward',0):.1f}:1\n\n"
+            arrow = "LONG" if s["action"] == "buy" else "SHORT"
+            star  = "STARK " if s.get("confidence", 0) >= MIN_CONFIDENCE else ""
+            msg  += f"{arrow} {star}{s['action'].upper()} {s['asset']} | {s['confidence']}%\n"
+            msg  += f"SL: {s.get('stopLoss',0):.1f}% | TP: {s.get('takeProfit',0):.1f}%\n\n"
 
         if not all_signals:
-            msg += "📊 Keine Trade-Signale – Markt abwarten.\n"
+            msg += "Keine Signale - Markt abwarten.\n"
 
         send_whatsapp(msg.strip())
 
-        # ── AUTO-TRADE: Nur Signale >= MIN_CONFIDENCE ──
         if req.auto_execute:
             if strong_signals:
-                log.info(f"⚡ AUTO-TRADE: {len(strong_signals)} starke Signale (≥{MIN_CONFIDENCE}%)")
-                send_whatsapp(
-                    f"⚡ *Auto-Trade wird ausgeführt*\n"
-                    f"{len(strong_signals)} Signal(e) mit ≥{MIN_CONFIDENCE}% Konfidenz..."
-                )
                 await auto_execute_signals(strong_signals, req.position_size)
-
-                if weak_signals:
-                    skipped = "\n".join([
-                        f"⚠️ {s['action'].upper()} {s['asset']} ({s.get('confidence',0)}%) – unter Limit"
-                        for s in weak_signals
-                    ])
-                    send_whatsapp(f"ℹ️ *Übersprungen (<{MIN_CONFIDENCE}%):*\n{skipped}")
             else:
-                send_whatsapp(
-                    f"⏸ *Kein Auto-Trade*\n"
-                    f"Keine Signale mit ≥{MIN_CONFIDENCE}% Konfidenz.\n"
-                    f"Nächste Analyse in {SCHEDULE_HOURS}h."
-                )
+                send_whatsapp(f"Kein Auto-Trade - keine Signale mit >= {MIN_CONFIDENCE}% Konfidenz.")
 
-        # Nächsten Lauf ankündigen
         job = scheduler.get_job("trading_pipeline")
         if job:
             next_run = job.next_run_time.strftime("%d.%m.%Y %H:%M")
-            send_whatsapp(f"⏰ *Nächste automatische Analyse:* {next_run}")
+            send_whatsapp(f"Naechste Analyse: {next_run}")
 
     except Exception as e:
         log.error(f"Pipeline-Fehler: {e}")
-        send_whatsapp(f"❌ *Pipeline-Fehler*\n{str(e)[:200]}")
+        send_whatsapp(f"Pipeline-Fehler: {str(e)[:200]}")
     finally:
         pipeline_running = False
 
 async def auto_execute_signals(signals: list, size: float):
     if not capital.is_connected():
         if not await capital.connect():
-            send_whatsapp("⚠️ Capital.com nicht verbunden – Orders nicht ausgeführt!")
+            send_whatsapp("Capital.com nicht verbunden - Orders nicht ausgefuehrt!")
             return
 
     executed = failed = 0
@@ -200,22 +179,15 @@ async def auto_execute_signals(signals: list, size: float):
             )
             if result.get("dealId"):
                 tracker.save_trade({**sig, "dealId": result["dealId"], "size": size, "status": "auto"})
-                send_whatsapp(
-                    f"✅ *Auto-Order platziert*\n"
-                    f"{sig['action'].upper()} {sig['asset']}\n"
-                    f"Size: €{size:.0f} | Konfidenz: {sig.get('confidence',0)}%\n"
-                    f"Deal ID: {result['dealId']}"
-                )
+                send_whatsapp(f"Order platziert: {sig['action'].upper()} {sig['asset']} | Deal: {result['dealId']}")
                 executed += 1
             else:
-                send_whatsapp(f"⚠️ Order fehlgeschlagen: {sig['asset']}\n{str(result)[:150]}")
                 failed += 1
         except Exception as e:
             log.error(f"Order-Fehler {sig['asset']}: {e}")
-            send_whatsapp(f"❌ Order-Fehler: {sig['asset']}\n{str(e)[:150]}")
             failed += 1
 
-    send_whatsapp(f"📊 *Zusammenfassung*\n✅ Ausgeführt: {executed} | ❌ Fehlgeschlagen: {failed}")
+    send_whatsapp(f"Auto-Trade: {executed} ausgefuehrt | {failed} fehlgeschlagen")
 
 def asset_to_epic(asset: str) -> str:
     return {
@@ -226,14 +198,11 @@ def asset_to_epic(asset: str) -> str:
         "US500": "US500", "US100": "USTEC", "DE40": "DE40", "UK100": "UK100",
     }.get(asset.upper(), asset.replace("/", ""))
 
-# ── ENDPOINTS ──
-
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    html_path = os.path.join(os.path.dirname(__file__), "dashboard.html")
+    html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
-    
     return HTMLResponse(content=html)
 
 @app.post("/analyze")
@@ -261,7 +230,7 @@ async def place_trade(req: TradeRequest):
         tracker.save_trade({"asset": req.asset, "direction": req.direction, "size": req.size,
                             "dealId": result["dealId"], "status": "manual",
                             "action": "buy" if req.direction == "long" else "sell"})
-        send_whatsapp(f"⚡ *Manueller Trade*\n{req.direction.upper()} {req.asset}\nSize: €{req.size}\nDeal: {result['dealId']}")
+        send_whatsapp(f"Manueller Trade: {req.direction.upper()} {req.asset} | Deal: {result['dealId']}")
     return result
 
 @app.get("/positions")
@@ -275,7 +244,7 @@ async def close_position(deal_id: str):
     if not capital.is_connected():
         await capital.connect()
     result = await capital.close_position(deal_id)
-    send_whatsapp(f"🔒 *Position geschlossen*\nDeal ID: {deal_id}")
+    send_whatsapp(f"Position geschlossen: {deal_id}")
     return result
 
 @app.get("/balance")
@@ -312,15 +281,15 @@ async def get_schedule():
 @app.post("/schedule/pause")
 async def pause_schedule():
     scheduler.pause_job("trading_pipeline")
-    send_whatsapp("⏸ *Scheduler pausiert* – kein automatischer Handel bis Resume")
+    send_whatsapp("Scheduler pausiert")
     return {"status": "pausiert"}
 
 @app.post("/schedule/resume")
 async def resume_schedule():
     scheduler.resume_job("trading_pipeline")
     job = scheduler.get_job("trading_pipeline")
-    next_run = job.next_run_time.strftime("%d.%m.%Y %H:%M") if job else "—"
-    send_whatsapp(f"▶️ *Scheduler fortgesetzt*\nNächste Analyse: {next_run}")
+    next_run = job.next_run_time.strftime("%d.%m.%Y %H:%M") if job else "?"
+    send_whatsapp(f"Scheduler aktiv - Naechste Analyse: {next_run}")
     return {"status": "aktiv", "next_run": next_run}
 
 @app.get("/status")
