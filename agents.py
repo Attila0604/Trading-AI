@@ -185,12 +185,17 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
 
     loop = asyncio.get_event_loop()
 
-    # Run agents (IO-bound wrapped in executor)
+    # Run agents sequentially with pauses to avoid rate limits (30K tokens/min)
     news_data  = await loop.run_in_executor(None, news_agent, assets)
+    await asyncio.sleep(8)
     tech_data  = await loop.run_in_executor(None, tech_agent, assets, strategy, tf)
+    await asyncio.sleep(8)
     macro_data = await loop.run_in_executor(None, macro_agent)
+    await asyncio.sleep(5)
     risk_data  = await loop.run_in_executor(None, risk_agent, news_data, tech_data, macro_data, risk_pct, sl_pct, tp_pct)
+    await asyncio.sleep(3)
     strat_data = await loop.run_in_executor(None, strategy_agent, strategy, macro_data, tech_data)
+    await asyncio.sleep(8)
     result     = await loop.run_in_executor(None, orchestrator_agent, news_data, tech_data, macro_data, risk_data, strat_data, assets, risk_pct, sl_pct, tp_pct)
 
     result["agentReports"] = {
