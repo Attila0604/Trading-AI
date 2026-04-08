@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.0 - Update 07.04.2026
+# Trading Multi-Agent v3.0 - Update 08.04.2026
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -21,7 +21,6 @@ from demo_tracker import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── Config ────────────────────────────────────────────────────────────────────
 ASSETS          = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500").split(",")
 STRATEGY        = os.getenv("TRADING_STRATEGY", "adaptive")
 MAX_RISK_PCT    = float(os.getenv("MAX_RISK_PCT", "2"))
@@ -42,16 +41,15 @@ latest_analysis  = {}
 pipeline_running = False
 schedule_log     = []
 
-# Aktive Config (kann zur Laufzeit geändert werden)
 active_config = {
-    "assets":    ASSETS.copy(),
-    "strategy":  STRATEGY,
-    "risk_pct":  MAX_RISK_PCT,
-    "sl_pct":    STOP_LOSS_PCT,
-    "tp_pct":    TAKE_PROFIT_PCT,
-    "size":      POSITION_SIZE,
-    "conf":      MIN_CONFIDENCE,
-    "mode":      "semi",
+    "assets":   ASSETS.copy(),
+    "strategy": STRATEGY,
+    "risk_pct": MAX_RISK_PCT,
+    "sl_pct":   STOP_LOSS_PCT,
+    "tp_pct":   TAKE_PROFIT_PCT,
+    "size":     POSITION_SIZE,
+    "conf":     MIN_CONFIDENCE,
+    "mode":     "semi",
 }
 
 scheduler = BackgroundScheduler(timezone="Europe/Vienna")
@@ -59,7 +57,6 @@ scheduler = BackgroundScheduler(timezone="Europe/Vienna")
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 def morgen_analyse_job():
-    """Tägliche Analyse um 07:00 Uhr"""
     log.info(f"🌅 Morgen-Analyse | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
     schedule_log.append({"time": datetime.now().isoformat(), "trigger": "07:00 Morgen-Analyse"})
     asyncio.run(run_analysis_pipeline(AnalyzeRequest(
@@ -74,7 +71,6 @@ def morgen_analyse_job():
 
 
 def tages_report_job():
-    """Täglicher Report um 20:00 Uhr"""
     log.info("📊 Tages-Report...")
     tages_snapshot()
     report = generiere_tages_report()
@@ -82,11 +78,6 @@ def tages_report_job():
 
 
 def ergebnis_check_job():
-    """
-    Ergebnis-Check alle 4 Stunden:
-    Prüft offene Demo-Trades via Capital.com Preise
-    ob SL oder TP getroffen wurde.
-    """
     offene = get_offene_trades()
     if not offene:
         return
@@ -95,43 +86,80 @@ def ergebnis_check_job():
 
 
 async def _check_trade_results(offene: list):
-    """Prüft ob SL oder TP getroffen wurde via Capital.com"""
+    """Prüft ob SL oder TP getroffen wurde via Capital.com Preise"""
     if not capital.is_connected():
         await capital.connect()
 
     for trade in offene:
         try:
-            asset = trade.get("asset", "")
-            epic  = asset_to_epic(asset)
+            asset       = trade.get("asset", "")
+            epic        = asset_to_epic(asset)
+            entry_price = float(trade.get("entry_price", 0))
+            action      = trade.get("action", "buy")
+            sl_pct      = float(trade.get("sl_pct", STOP_LOSS_PCT))
+            tp_pct      = float(trade.get("tp_pct", TAKE_PROFIT_PCT))
 
             # Aktuellen Preis holen
-            price_data = await capital.get_prices(epic)
-            if price_data.get("error"):
-                log.warning(f"Preis für {asset} nicht verfügbar")
-                continue
-
-            # Aktuellen Kurs
+            price_data    = await capital.get_prices(epic)
             current_price = price_data.get("bid") or price_data.get("ask")
+
             if not current_price:
+                log.warning(f"Kein Preis für {asset}")
                 continue
 
-            # Entry Preis aus Trade (falls vorhanden)
-            # Wir simulieren: prüfen ob Preis sich um SL/TP % bewegt hat
-            geoeffnet   = datetime.fromisoformat(trade["geoeffnet_am"])
-            alter_std   = (datetime.now() - geoeffnet).total_seconds() / 3600
-            action      = trade.get("action", "")
-            sl_pct      = trade.get("sl_pct", 1.5)
-            tp_pct      = trade.get("tp_pct", 3.0)
+            current_price = float(current_price)
+            geoeffnet     = datetime.fromisoformat(trade["geoeffnet_am"])
+            alter_std     = (datetime.now() - geoeffnet).total_seconds() / 3600
+
+            log.info(f"🔍 {trade['id']} | {asset} | Entry: {entry_price} | Aktuell: {current_price} | {alter_std:.1f}h")
+
+            ergebnis = None
+
+            # ── SL/TP Check ───────────────────────────────────────────────
+            if entry_price > 0:
+                if action == "buy":
+                    tp_level = entry_price * (1 + tp_pct / 100)
+                    sl_level = entry_price * (1 - sl_pct / 100)
+                    if current_price >= tp_level:
+                        ergebnis = "gewonnen"
+                        log.info(f"✅ TP! {asset} | {entry_price:.5f} → {current_price:.5f} (TP: {tp_level:.5f})")
+                    elif current_price <= sl_level:
+                        ergebnis = "verloren"
+                        log.info(f"❌ SL! {asset} | {entry_price:.5f} → {current_price:.5f} (SL: {sl_level:.5f})")
+                else:  # sell
+                    tp_level = entry_price * (1 - tp_pct / 100)
+                    sl_level = entry_price * (1 + sl_pct / 100)
+                    if current_price <= tp_level:
+                        ergebnis = "gewonnen"
+                        log.info(f"✅ TP SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
+                    elif current_price >= sl_level:
+                        ergebnis = "verloren"
+                        log.info(f"❌ SL SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
 
             # Nach 48h automatisch schließen
-            if alter_std > 48:
-                trade_schliessen(trade["id"], "verloren")
-                tracker.save_trade({**trade, "ergebnis": "verloren", "kapital_danach": get_statistik()["aktuelles_kapital"]})
-                log.info(f"Trade {trade['id']} nach 48h geschlossen")
-                send_whatsapp(f"⏰ Demo-Trade automatisch geschlossen:\n{trade['id']} | {asset} | Nach 48h → Verloren")
-                continue
+            if ergebnis is None and alter_std > 48:
+                ergebnis = "verloren"
+                log.info(f"⏰ Trade {trade['id']} nach 48h geschlossen")
+            # ─────────────────────────────────────────────────────────────
 
-            log.info(f"✓ Trade {trade['id']} | {asset} | Preis: {current_price} | Alter: {alter_std:.1f}h")
+            if ergebnis:
+                geschlossen = trade_schliessen(trade["id"], ergebnis)
+                stats       = get_statistik()
+                tracker.save_trade({
+                    **trade,
+                    "ergebnis":       ergebnis,
+                    "kapital_danach": stats["aktuelles_kapital"],
+                })
+                emoji = "✅" if ergebnis == "gewonnen" else "❌"
+                send_whatsapp(
+                    f"{emoji} *Demo-Trade {ergebnis.upper()}*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 {asset} | {action.upper()}\n"
+                    f"📈 Entry: {entry_price:.5f}\n"
+                    f"📉 Aktuell: {current_price:.5f}\n"
+                    f"💰 P&L: {'+' if geschlossen.get('pnl',0)>=0 else ''}€{geschlossen.get('pnl',0):.2f}\n"
+                    f"💼 Kapital: €{stats['aktuelles_kapital']:.2f}"
+                )
 
         except Exception as e:
             log.error(f"Ergebnis-Check Fehler [{trade.get('id')}]: {e}")
@@ -140,24 +168,15 @@ async def _check_trade_results(offene: list):
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Tägliche Analyse 07:00 Uhr
-    scheduler.add_job(
-        morgen_analyse_job,
+    scheduler.add_job(morgen_analyse_job,
         trigger=CronTrigger(hour=7, minute=0, timezone="Europe/Vienna"),
-        id="morgen_analyse", replace_existing=True,
-    )
-    # Tages-Report 20:00 Uhr
-    scheduler.add_job(
-        tages_report_job,
+        id="morgen_analyse", replace_existing=True)
+    scheduler.add_job(tages_report_job,
         trigger=CronTrigger(hour=20, minute=0, timezone="Europe/Vienna"),
-        id="tages_report", replace_existing=True,
-    )
-    # Ergebnis-Check alle 4 Stunden
-    scheduler.add_job(
-        ergebnis_check_job,
+        id="tages_report", replace_existing=True)
+    scheduler.add_job(ergebnis_check_job,
         trigger=IntervalTrigger(hours=4, timezone="Europe/Vienna"),
-        id="ergebnis_check", replace_existing=True,
-    )
+        id="ergebnis_check", replace_existing=True)
     scheduler.start()
 
     try:
@@ -239,14 +258,24 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         latest_signals  = all_signals
         tracker.save_analysis(result)
 
-        # Demo-Trades öffnen
+        # Demo-Trades öffnen mit Entry-Price
         for signal in all_signals:
             if signal.get("confidence", 0) >= active_config["conf"]:
+                # Entry-Price von Capital.com holen
+                entry_price = 0
+                try:
+                    epic        = asset_to_epic(signal["asset"])
+                    price_data  = await capital.get_prices(epic)
+                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                except Exception as pe:
+                    log.warning(f"Entry-Price Fehler [{signal['asset']}]: {pe}")
+
                 demo_trade = signal_oeffnen({
                     **signal,
+                    "entry_price":  entry_price,
                     "strategyUsed": result.get("strategyUsed", req.strategy),
                 })
-                log.info(f"Demo-Trade geöffnet: {demo_trade['id']} | {signal['asset']}")
+                log.info(f"Demo-Trade geöffnet: {demo_trade['id']} | {signal['asset']} | Entry: {entry_price}")
 
         score      = result.get("sessionScore", 0)
         overview   = result.get("marketOverview", "")
@@ -266,7 +295,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             star  = "⭐ " if s.get("confidence", 0) >= active_config["conf"] else ""
             msg  += (
                 f"{arrow} *{star}{s['asset']}* | {s['confidence']}%\n"
-                f"SL: {s.get('stopLoss', 0):.1f}% | TP: {s.get('takeProfit', 0):.1f}%\n"
+                f"SL: {active_config['sl_pct']:.1f}% | TP: {active_config['tp_pct']:.1f}%\n"
                 f"_{s.get('summary', '')[:100]}_\n\n"
             )
 
@@ -306,8 +335,8 @@ async def auto_execute_signals(signals: list, size: float):
                 epic=asset_to_epic(sig["asset"]),
                 direction=sig["direction"].upper(),
                 size=size,
-                stop_loss_pct=sig.get("stopLoss", STOP_LOSS_PCT),
-                take_profit_pct=sig.get("takeProfit", TAKE_PROFIT_PCT),
+                stop_loss_pct=active_config["sl_pct"],
+                take_profit_pct=active_config["tp_pct"],
             )
             if result.get("dealId"):
                 tracker.save_trade({**sig, "dealId": result["dealId"], "size": size, "status": "auto"})
@@ -348,7 +377,6 @@ async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks 
 
 @app.post("/config/speichern")
 async def config_speichern(req: ConfigRequest):
-    """Speichert die aktive Konfiguration zur Laufzeit"""
     alte_strategie = active_config["strategy"]
     if req.assets   is not None: active_config["assets"]   = req.assets
     if req.strategy is not None: active_config["strategy"] = req.strategy
@@ -358,10 +386,7 @@ async def config_speichern(req: ConfigRequest):
     if req.size     is not None: active_config["size"]      = req.size
     if req.conf     is not None: active_config["conf"]      = req.conf
     if req.mode     is not None: active_config["mode"]      = req.mode
-
     log.info(f"Config gespeichert: {active_config}")
-
-    # WhatsApp wenn Strategie geändert
     if req.strategy and req.strategy != alte_strategie:
         send_whatsapp(
             f"⚙️ *Strategie geändert*\n"
@@ -369,7 +394,6 @@ async def config_speichern(req: ConfigRequest):
             f"Neu: *{req.strategy}*\n"
             f"Nächste Analyse: morgen 07:00 Uhr"
         )
-
     return {"status": "gespeichert", "config": active_config}
 
 @app.get("/config/aktiv")
