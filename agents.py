@@ -72,10 +72,10 @@ Antworte NUR mit JSON:
 # ── AGENT 4: RISK GUARDIAN ──
 def risk_agent(news: list, tech: list, macro: dict, risk_pct: float, sl: float, tp: float) -> dict:
     log.info("[Risk Guardian] Risiko-Assessment...")
-    bullish_news = sum(1 for n in news if n.get("sentiment") == "bullish")
-    bearish_news = sum(1 for n in news if n.get("sentiment") == "bearish")
+    bullish_news   = sum(1 for n in news if n.get("sentiment") == "bullish")
+    bearish_news   = sum(1 for n in news if n.get("sentiment") == "bearish")
     avg_confluence = sum(t.get("confluenceScore", 5) for t in tech) / max(len(tech), 1)
-    macro_env = macro.get("environment", "mixed")
+    macro_env      = macro.get("environment", "mixed")
 
     risk_score = avg_confluence * 10
     if macro_env == "risk-off":
@@ -84,24 +84,24 @@ def risk_agent(news: list, tech: list, macro: dict, risk_pct: float, sl: float, 
         risk_score *= 0.85
 
     return {
-        "approved": risk_score > 40,
-        "riskScore": round(risk_score),
-        "maxRiskPct": risk_pct,
-        "stopLossPct": sl,
-        "takeProfitPct": tp,
-        "avgConfluence": round(avg_confluence, 1),
+        "approved":         risk_score > 40,
+        "riskScore":        round(risk_score),
+        "maxRiskPct":       risk_pct,
+        "stopLossPct":      sl,
+        "takeProfitPct":    tp,
+        "avgConfluence":    round(avg_confluence, 1),
         "macroEnvironment": macro_env,
-        "message": "Risiko akzeptabel" if risk_score > 40 else "Zu hohes Risiko – Abwarten empfohlen",
+        "message":          "Risiko akzeptabel" if risk_score > 40 else "Zu hohes Risiko – Abwarten empfohlen",
     }
 
 
 # ── AGENT 5: STRATEGY COMMANDER ──
 STRATEGY_MAP = {
-    "trend":     {"name": "Trend Following",  "timeframe": "4H–1D",    "risk": "MITTEL"},
-    "reversion": {"name": "Mean Reversion",   "timeframe": "1H–4H",    "risk": "NIEDRIG"},
-    "news_play": {"name": "News Catalyst",    "timeframe": "5M–1H",    "risk": "HOCH"},
-    "breakout":  {"name": "Breakout Hunter",  "timeframe": "1H–4H",    "risk": "MITTEL"},
-    "scalping":  {"name": "Scalp Modus",      "timeframe": "1M–5M",    "risk": "HOCH"},
+    "trend":     {"name": "Trend Following",  "timeframe": "4H–1D",     "risk": "MITTEL"},
+    "reversion": {"name": "Mean Reversion",   "timeframe": "1H–4H",     "risk": "NIEDRIG"},
+    "news_play": {"name": "News Catalyst",    "timeframe": "5M–1H",     "risk": "HOCH"},
+    "breakout":  {"name": "Breakout Hunter",  "timeframe": "1H–4H",     "risk": "MITTEL"},
+    "scalping":  {"name": "Scalp Modus",      "timeframe": "1M–5M",     "risk": "HOCH"},
     "adaptive":  {"name": "KI Adaptiv",       "timeframe": "Dynamisch", "risk": "VARIABEL"},
 }
 
@@ -109,7 +109,7 @@ def strategy_agent(strategy_id: str, macro: dict, tech: list) -> dict:
     log.info(f"[Strategy AI] Konfiguriere Strategie: {strategy_id}")
     strat = STRATEGY_MAP.get(strategy_id, STRATEGY_MAP["adaptive"])
     if strategy_id == "adaptive":
-        env = macro.get("environment", "mixed")
+        env     = macro.get("environment", "mixed")
         appetite = macro.get("riskAppetite", "medium")
         if env == "risk-on" and appetite == "high":
             strat = STRATEGY_MAP["trend"]
@@ -121,8 +121,9 @@ def strategy_agent(strategy_id: str, macro: dict, tech: list) -> dict:
     return strat
 
 
-# ── AGENT 6 & 7: ORCHESTRATOR + EXECUTOR (combined) ──
-def orchestrator_agent(news: list, tech: list, macro: dict, risk: dict, strategy: dict, assets: list, risk_pct: float, sl: float, tp: float) -> dict:
+# ── AGENT 6 & 7: ORCHESTRATOR + EXECUTOR ──
+def orchestrator_agent(news: list, tech: list, macro: dict, risk: dict, strategy: dict,
+                       assets: list, risk_pct: float, sl: float, tp: float) -> dict:
     log.info("[Orchestrator] Synthetisiere alle Agent-Reports...")
     raw = call_claude(
         f"""Du bist der Master Trading Orchestrator. Synthetisiere alle Agent-Berichte zu finalen Trade-Entscheidungen.
@@ -140,7 +141,15 @@ RISK ASSESSMENT:
 {json.dumps(risk, ensure_ascii=False)}
 
 STRATEGIE: {strategy.get('name')} | TF: {strategy.get('timeframe')} | Risk: {strategy.get('risk')}
-RISIKO-SETTINGS: Max {risk_pct}% / Trade | SL: {sl}% | TP: {tp}%
+
+RISIKO-SETTINGS:
+- Max Risiko: {risk_pct}% pro Trade
+- Stop Loss: {sl}% (PROZENTSATZ vom Entry-Preis, NICHT absoluter Preis!)
+- Take Profit: {tp}% (PROZENTSATZ vom Entry-Preis, NICHT absoluter Preis!)
+
+WICHTIG: stopLoss und takeProfit MÜSSEN Prozentsätze zwischen 0.1 und 20.0 sein!
+Beispiel: stopLoss: 1.5 bedeutet 1.5% unter dem Entry-Preis.
+NIEMALS den absoluten Preis (z.B. 6550 oder 44775) als stopLoss/takeProfit angeben!
 
 Antworte NUR mit JSON:
 {{
@@ -149,10 +158,10 @@ Antworte NUR mit JSON:
     "action": "buy|sell|hold",
     "direction": "long|short|none",
     "confidence": 0-100,
-    "entryReason": "string kurz",
+    "entryReason": "string kurz auf Deutsch",
     "riskReward": number,
-    "stopLoss": number,
-    "takeProfit": number,
+    "stopLoss": {sl},
+    "takeProfit": {tp},
     "urgency": "immediate|wait|watch",
     "summary": "2-3 Sätze auf Deutsch"
   }}],
@@ -160,12 +169,14 @@ Antworte NUR mit JSON:
   "sessionScore": 0-100,
   "recommendation": "string auf Deutsch"
 }}""",
-        "Du bist der Master Trading Orchestrator. Antworte AUSSCHLIESSLICH mit validem JSON. Präzise und professionell auf Deutsch.",
+        "Du bist der Master Trading Orchestrator. Antworte AUSSCHLIESSLICH mit validem JSON. stopLoss und takeProfit sind IMMER Prozentsätze (z.B. 1.5 für 1.5%), NIEMALS absolute Preise!",
     )
     fallback = {
-        "decisions": [{"asset": a, "action": "hold", "direction": "none", "confidence": 30, "entryReason": "Fehler", "riskReward": 0, "stopLoss": sl, "takeProfit": tp, "urgency": "watch", "summary": "Analyse fehlgeschlagen."} for a in assets],
+        "decisions": [{"asset": a, "action": "hold", "direction": "none", "confidence": 30,
+                       "entryReason": "Fehler", "riskReward": 0, "stopLoss": sl, "takeProfit": tp,
+                       "urgency": "watch", "summary": "Analyse fehlgeschlagen."} for a in assets],
         "marketOverview": "Analyse fehlgeschlagen.",
-        "sessionScore": 0,
+        "sessionScore":   0,
         "recommendation": "Manuell prüfen",
     }
     return parse_json(raw, fallback)
@@ -181,11 +192,9 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     log.info("=" * 60)
 
     strat_info = STRATEGY_MAP.get(strategy, STRATEGY_MAP["adaptive"])
-    tf = strat_info["timeframe"]
+    tf         = strat_info["timeframe"]
+    loop       = asyncio.get_event_loop()
 
-    loop = asyncio.get_event_loop()
-
-    # Run agents sequentially with pauses to avoid rate limits (30K tokens/min)
     news_data  = await loop.run_in_executor(None, news_agent, assets)
     await asyncio.sleep(30)
     tech_data  = await loop.run_in_executor(None, tech_agent, assets, strategy, tf)
@@ -196,7 +205,8 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     await asyncio.sleep(10)
     strat_data = await loop.run_in_executor(None, strategy_agent, strategy, macro_data, tech_data)
     await asyncio.sleep(30)
-    result     = await loop.run_in_executor(None, orchestrator_agent, news_data, tech_data, macro_data, risk_data, strat_data, assets, risk_pct, sl_pct, tp_pct)
+    result     = await loop.run_in_executor(None, orchestrator_agent, news_data, tech_data, macro_data,
+                                            risk_data, strat_data, assets, risk_pct, sl_pct, tp_pct)
 
     result["agentReports"] = {
         "news":     news_data,
@@ -205,8 +215,8 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
         "risk":     risk_data,
         "strategy": strat_data,
     }
-    result["timestamp"] = __import__('datetime').datetime.now().isoformat()
-    result["assets"]    = assets
+    result["timestamp"]    = __import__('datetime').datetime.now().isoformat()
+    result["assets"]       = assets
     result["strategyUsed"] = strat_data.get("name", strategy)
 
     log.info(f"PIPELINE FERTIG | Score: {result.get('sessionScore')}/100 | Signale: {len([d for d in result.get('decisions',[]) if d.get('action')!='hold'])}")
