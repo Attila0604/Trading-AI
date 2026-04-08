@@ -64,10 +64,7 @@ def _init_daten() -> dict:
 
 
 def _validiere_prozent(wert, default: float, max_wert: float = 20.0) -> float:
-    """
-    Stellt sicher dass ein Wert ein gültiger Prozentsatz ist.
-    Falls der Wert zu groß ist (z.B. ein Preis statt Prozent) → default verwenden.
-    """
+    """Stellt sicher dass ein Wert ein gültiger Prozentsatz ist."""
     try:
         wert = float(wert)
         if wert <= 0 or wert > max_wert:
@@ -82,40 +79,36 @@ def signal_oeffnen(signal: dict) -> dict:
     daten   = _lade_daten()
     kapital = daten["aktuelles_kapital"]
 
-    # Einsatz = Risiko % des Kapitals
     einsatz = round(kapital * RISIKO_PROZENT / 100, 2)
     einsatz = max(1.0, min(einsatz, kapital))
 
-    # ── FIX: SL/TP als Prozentsatz validieren ────────────────────────────
-    # stopLoss/takeProfit aus Signal können Preise sein (z.B. 43200 für BTC)
-    # Wir nehmen nur Werte die sinnvolle Prozentsätze sind (0 < x <= 20)
-    sl_pct = _validiere_prozent(signal.get("stopLoss"),  SL_PROZENT)
+    sl_pct = _validiere_prozent(signal.get("stopLoss"),   SL_PROZENT)
     tp_pct = _validiere_prozent(signal.get("takeProfit"), TP_PROZENT)
-    # ─────────────────────────────────────────────────────────────────────
 
     sl_absolut = round(einsatz * sl_pct / 100, 2)
     tp_absolut = round(einsatz * tp_pct / 100, 2)
 
     trade = {
-        "id":             f"T{len(daten['trades']) + 1:04d}",
-        "asset":          signal.get("asset", ""),
-        "action":         signal.get("action", ""),
-        "direction":      signal.get("direction", ""),
-        "konfidenz":      signal.get("confidence", 0),
-        "einsatz":        einsatz,
-        "sl_pct":         sl_pct,
-        "tp_pct":         tp_pct,
-        "sl_absolut":     sl_absolut,
-        "tp_absolut":     tp_absolut,
-        "potenz_gewinn":  tp_absolut,
-        "potenz_verlust": sl_absolut,
-        "rr":             round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0,
-        "status":         "offen",
-        "geoeffnet_am":   datetime.now().isoformat(),
-        "geschlossen_am": None,
-        "pnl":            0.0,
+        "id":              f"T{len(daten['trades']) + 1:04d}",
+        "asset":           signal.get("asset", ""),
+        "action":          signal.get("action", ""),
+        "direction":       signal.get("direction", ""),
+        "konfidenz":       signal.get("confidence", 0),
+        "einsatz":         einsatz,
+        "sl_pct":          sl_pct,
+        "tp_pct":          tp_pct,
+        "sl_absolut":      sl_absolut,
+        "tp_absolut":      tp_absolut,
+        "potenz_gewinn":   tp_absolut,
+        "potenz_verlust":  sl_absolut,
+        "rr":              round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0,
+        "entry_price":     float(signal.get("entry_price", 0)),  # ← NEU
+        "status":          "offen",
+        "geoeffnet_am":    datetime.now().isoformat(),
+        "geschlossen_am":  None,
+        "pnl":             0.0,
         "zusammenfassung": signal.get("summary", ""),
-        "strategie":      signal.get("strategyUsed", ""),
+        "strategie":       signal.get("strategyUsed", ""),
     }
 
     daten["trades"].append(trade)
@@ -123,7 +116,7 @@ def signal_oeffnen(signal: dict) -> dict:
     daten["statistik"]["offen"]         += 1
 
     _speichere_daten(daten)
-    log.info(f"✅ Demo-Trade: {trade['id']} | {trade['asset']} {trade['action'].upper()} | €{einsatz} | SL:{sl_pct}% TP:{tp_pct}%")
+    log.info(f"✅ Demo-Trade: {trade['id']} | {trade['asset']} {trade['action'].upper()} | €{einsatz} | SL:{sl_pct}% TP:{tp_pct}% | Entry:{trade['entry_price']}")
     return trade
 
 
@@ -165,18 +158,17 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: float = None) -
         stats["verloren"]            += 1
         stats["schlechtester_trade"]  = min(stats["schlechtester_trade"], pnl)
 
-    abgeschlossen   = stats["gewonnen"] + stats["verloren"]
+    abgeschlossen     = stats["gewonnen"] + stats["verloren"]
     stats["win_rate"] = round(stats["gewonnen"] / abgeschlossen * 100, 1) if abgeschlossen > 0 else 0
     stats["roi"]      = round((daten["aktuelles_kapital"] - daten["startkapital"]) / daten["startkapital"] * 100, 2)
 
-    # Drawdown
-    peak = daten["startkapital"]
+    peak    = daten["startkapital"]
     laufend = daten["startkapital"]
     for t in daten["trades"]:
         if t["status"] in ("gewonnen", "verloren", "breakeven"):
             laufend = round(laufend + t["pnl"], 2)
             peak    = max(peak, laufend)
-    drawdown = round((peak - daten["aktuelles_kapital"]) / peak * 100, 2) if peak > 0 else 0
+    drawdown             = round((peak - daten["aktuelles_kapital"]) / peak * 100, 2) if peak > 0 else 0
     stats["max_drawdown"] = max(stats["max_drawdown"], drawdown)
 
     _speichere_daten(daten)
@@ -230,15 +222,15 @@ def get_statistik() -> dict:
 
 
 def generiere_tages_report() -> str:
-    stats   = get_statistik()
-    kapital = stats["aktuelles_kapital"]
-    start   = stats["startkapital"]
-    pnl     = stats["pnl_gesamt"]
-    roi     = stats["statistik"]["roi"]
-    wr      = stats["statistik"]["win_rate"]
-    offen   = len(stats["offene_trades"])
-    gewon   = stats["statistik"]["gewonnen"]
-    verl    = stats["statistik"]["verloren"]
+    stats     = get_statistik()
+    kapital   = stats["aktuelles_kapital"]
+    start     = stats["startkapital"]
+    pnl       = stats["pnl_gesamt"]
+    roi       = stats["statistik"]["roi"]
+    wr        = stats["statistik"]["win_rate"]
+    offen     = len(stats["offene_trades"])
+    gewon     = stats["statistik"]["gewonnen"]
+    verl      = stats["statistik"]["verloren"]
     snapshots = stats["tages_snapshots"]
     tages_pnl = snapshots[-1]["pnl"] if snapshots else 0
 
