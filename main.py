@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.0 - Update 08.04.2026
+# Trading Multi-Agent v3.0 - Update 09.04.2026
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -86,7 +86,6 @@ def ergebnis_check_job():
 
 
 async def _check_trade_results(offene: list):
-    """Prüft ob SL oder TP getroffen wurde via Capital.com Preise"""
     if not capital.is_connected():
         await capital.connect()
 
@@ -99,7 +98,6 @@ async def _check_trade_results(offene: list):
             sl_pct      = float(trade.get("sl_pct", STOP_LOSS_PCT))
             tp_pct      = float(trade.get("tp_pct", TAKE_PROFIT_PCT))
 
-            # Aktuellen Preis holen
             price_data    = await capital.get_prices(epic)
             current_price = price_data.get("bid") or price_data.get("ask")
 
@@ -115,18 +113,17 @@ async def _check_trade_results(offene: list):
 
             ergebnis = None
 
-            # ── SL/TP Check ───────────────────────────────────────────────
             if entry_price > 0:
                 if action == "buy":
                     tp_level = entry_price * (1 + tp_pct / 100)
                     sl_level = entry_price * (1 - sl_pct / 100)
                     if current_price >= tp_level:
                         ergebnis = "gewonnen"
-                        log.info(f"✅ TP! {asset} | {entry_price:.5f} → {current_price:.5f} (TP: {tp_level:.5f})")
+                        log.info(f"✅ TP! {asset} | {entry_price:.5f} → {current_price:.5f}")
                     elif current_price <= sl_level:
                         ergebnis = "verloren"
-                        log.info(f"❌ SL! {asset} | {entry_price:.5f} → {current_price:.5f} (SL: {sl_level:.5f})")
-                else:  # sell
+                        log.info(f"❌ SL! {asset} | {entry_price:.5f} → {current_price:.5f}")
+                else:
                     tp_level = entry_price * (1 - tp_pct / 100)
                     sl_level = entry_price * (1 + sl_pct / 100)
                     if current_price <= tp_level:
@@ -136,11 +133,9 @@ async def _check_trade_results(offene: list):
                         ergebnis = "verloren"
                         log.info(f"❌ SL SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
 
-            # Nach 48h automatisch schließen
             if ergebnis is None and alter_std > 48:
                 ergebnis = "verloren"
                 log.info(f"⏰ Trade {trade['id']} nach 48h geschlossen")
-            # ─────────────────────────────────────────────────────────────
 
             if ergebnis:
                 geschlossen = trade_schliessen(trade["id"], ergebnis)
@@ -186,7 +181,6 @@ async def lifespan(app: FastAPI):
         log.warning(f"Capital.com Fehler: {e}")
 
     tages_snapshot()
-
     send_whatsapp(
         f"🤖 *Trading-Agent gestartet*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -252,6 +246,20 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             tp_pct=req.tp_pct, position_size=req.position_size,
         )
 
+        # ── FIX: SL/TP Werte korrigieren ─────────────────────────────────
+        for decision in result.get("decisions", []):
+            try:
+                if float(decision.get("stopLoss", 0)) > 20:
+                    decision["stopLoss"] = active_config["sl_pct"]
+                    log.info(f"SL korrigiert: {decision['asset']} → {active_config['sl_pct']}%")
+                if float(decision.get("takeProfit", 0)) > 20:
+                    decision["takeProfit"] = active_config["tp_pct"]
+                    log.info(f"TP korrigiert: {decision['asset']} → {active_config['tp_pct']}%")
+            except Exception:
+                decision["stopLoss"]   = active_config["sl_pct"]
+                decision["takeProfit"] = active_config["tp_pct"]
+        # ─────────────────────────────────────────────────────────────────
+
         latest_analysis = result
         decisions       = result.get("decisions", [])
         all_signals     = [d for d in decisions if d.get("action") != "hold"]
@@ -261,7 +269,6 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         # Demo-Trades öffnen mit Entry-Price
         for signal in all_signals:
             if signal.get("confidence", 0) >= active_config["conf"]:
-                # Entry-Price von Capital.com holen
                 entry_price = 0
                 try:
                     epic        = asset_to_epic(signal["asset"])
@@ -275,7 +282,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     "entry_price":  entry_price,
                     "strategyUsed": result.get("strategyUsed", req.strategy),
                 })
-                log.info(f"Demo-Trade geöffnet: {demo_trade['id']} | {signal['asset']} | Entry: {entry_price}")
+                log.info(f"Demo-Trade: {demo_trade['id']} | {signal['asset']} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
 
         score      = result.get("sessionScore", 0)
         overview   = result.get("marketOverview", "")
