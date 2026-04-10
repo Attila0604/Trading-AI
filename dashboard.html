@@ -32,6 +32,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .card{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:16px;margin-bottom:12px}
 .card-title{font-size:9px;font-weight:600;letter-spacing:.16em;color:var(--muted);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--b)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
 .grid4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px}
 .stat-card{background:var(--c);border:1px solid var(--b);border-radius:10px;padding:14px}
 .stat-l{font-size:9px;letter-spacing:.14em;color:var(--muted);margin-bottom:6px}
@@ -71,6 +72,15 @@ canvas{width:100%!important;height:200px!important}
 .kpi-sub{font-size:9px;color:var(--muted);margin-top:4px}
 .progress-bar{height:6px;background:var(--b);border-radius:3px;overflow:hidden;margin-top:6px}
 .progress-fill{height:100%;border-radius:3px;transition:width .5s}
+/* Money Management */
+.mm-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+.mm-card{background:var(--s);border:1px solid var(--b);border-radius:8px;padding:12px;text-align:center}
+.mm-label{font-size:8px;color:var(--muted);letter-spacing:.1em;margin-bottom:4px}
+.mm-value{font-size:18px;font-weight:700;font-family:var(--font)}
+.mm-sub{font-size:9px;color:var(--muted);margin-top:3px}
+.risk-bar{height:8px;background:var(--b);border-radius:4px;overflow:hidden;margin-top:8px}
+.risk-fill{height:100%;border-radius:4px;transition:width .5s}
+/* Toast */
 .toast{position:fixed;bottom:20px;right:20px;background:var(--c);border:1px solid var(--b);border-radius:8px;padding:12px 18px;font-size:11px;z-index:999;transform:translateY(80px);opacity:0;transition:all .3s;pointer-events:none}
 .toast.show{transform:translateY(0);opacity:1}
 .toast.ok{border-color:#10b98155;color:var(--green)}
@@ -80,8 +90,8 @@ canvas{width:100%!important;height:200px!important}
 button:hover{filter:brightness(1.15)}
 ::-webkit-scrollbar{width:3px;height:3px}
 ::-webkit-scrollbar-thumb{background:#1c1c30;border-radius:2px}
-@media(max-width:900px){.grid2,.grid4,.kpi-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:600px){.grid2,.grid4,.kpi-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.grid2,.grid3,.grid4,.kpi-grid,.mm-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.grid2,.grid3,.grid4,.kpi-grid,.mm-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -120,7 +130,7 @@ button:hover{filter:brightness(1.15)}
 
 <div class="main">
 
-<!-- DEMO-KAPITAL -->
+<!-- ═══ DEMO-KAPITAL ═══ -->
 <div id="tab-demo">
   <div class="kpi-grid">
     <div class="kpi-card">
@@ -144,6 +154,33 @@ button:hover{filter:brightness(1.15)}
       <div class="kpi-value" id="dk-roi">—%</div>
       <div class="kpi-sub" id="dk-roi-sub">Seit Start</div>
     </div>
+  </div>
+
+  <!-- MONEY MANAGEMENT -->
+  <div class="card" id="mm-card">
+    <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+      <span>💡 MONEY MANAGEMENT</span>
+      <span id="mm-status" class="badge" style="background:#10b98120;color:var(--green);border:1px solid #10b98133">NORMAL</span>
+    </div>
+    <div class="mm-grid">
+      <div class="mm-card">
+        <div class="mm-label">EMPFOHLENER EINSATZ</div>
+        <div class="mm-value" id="mm-einsatz" style="color:var(--gold)">€20</div>
+        <div class="mm-sub" id="mm-einsatz-sub">2% des Kapitals</div>
+      </div>
+      <div class="mm-card">
+        <div class="mm-label">RISIKO-STUFE</div>
+        <div class="mm-value" id="mm-stufe" style="color:var(--cyan)">NORMAL</div>
+        <div class="mm-sub" id="mm-stufe-sub">Win Rate: —%</div>
+        <div class="risk-bar"><div class="risk-fill" id="mm-risk-bar" style="background:var(--cyan);width:50%"></div></div>
+      </div>
+      <div class="mm-card">
+        <div class="mm-label">DRAWDOWN SCHUTZ</div>
+        <div class="mm-value" id="mm-drawdown" style="color:var(--green)">OK</div>
+        <div class="mm-sub" id="mm-drawdown-sub">Max DD: 0%</div>
+      </div>
+    </div>
+    <div id="mm-alert" style="display:none;background:#f43f5e11;border:1px solid #f43f5e33;border-radius:6px;padding:10px;font-size:10px;color:var(--red)"></div>
   </div>
 
   <div class="grid2">
@@ -178,7 +215,7 @@ button:hover{filter:brightness(1.15)}
   </div>
 </div>
 
-<!-- SIGNALE -->
+<!-- ═══ SIGNALE ═══ -->
 <div id="tab-signale" style="display:none">
   <div class="grid2">
     <div class="card" style="height:560px;display:flex;flex-direction:column">
@@ -199,7 +236,7 @@ button:hover{filter:brightness(1.15)}
   </div>
 </div>
 
-<!-- PORTFOLIO -->
+<!-- ═══ PORTFOLIO ═══ -->
 <div id="tab-portfolio" style="display:none">
   <div class="grid4" style="margin-bottom:12px">
     <div class="stat-card"><div class="stat-l">KONTOSTAND</div><div class="stat-v" id="p-bal" style="color:var(--gold)">€—</div><div class="stat-s" id="p-avail">Verfügbar: —</div></div>
@@ -213,7 +250,7 @@ button:hover{filter:brightness(1.15)}
   </div>
 </div>
 
-<!-- KONFIGURATION -->
+<!-- ═══ KONFIGURATION ═══ -->
 <div id="tab-config" style="display:none">
   <div class="grid2">
     <div>
@@ -242,7 +279,6 @@ button:hover{filter:brightness(1.15)}
         <div class="card-title">TRADING-MODUS</div>
         <div id="mode-btns" style="display:flex;flex-direction:column;gap:7px"></div>
       </div>
-      <!-- SPEICHERN BUTTON -->
       <div class="card" style="background:#10b98108;border-color:#10b98133">
         <div class="card-title">KONFIGURATION SPEICHERN</div>
         <div style="color:var(--muted);font-size:10px;line-height:1.7;margin-bottom:10px">
@@ -255,7 +291,7 @@ button:hover{filter:brightness(1.15)}
   </div>
 </div>
 
-<!-- EINSTELLUNGEN -->
+<!-- ═══ EINSTELLUNGEN ═══ -->
 <div id="tab-einstellungen" style="display:none">
   <div class="grid2">
     <div class="card">
@@ -321,7 +357,8 @@ const STRATS=[
 
 // ═══ UTILS ════════════════════════════════════════════════════════════
 const nowT=()=>new Date().toLocaleTimeString("de-AT");
-const fmt=(n)=>n!=null?Number(n).toLocaleString("de-AT",{minimumFractionDigits:2,maximumFractionDigits:2}):"—";
+const fmt=(n,dec=2)=>n!=null?Number(n).toLocaleString("de-AT",{minimumFractionDigits:dec,maximumFractionDigits:dec}):"—";
+const fmtP=(n,dec=4)=>n!=null?Number(n).toFixed(dec):"—";
 function toast(msg,type="inf"){const t=document.getElementById("toast");t.textContent=msg;t.className="toast "+type+" show";setTimeout(()=>t.classList.remove("show"),3000);}
 function logMsg(emoji,msg,cls="log-info"){
   const box=document.getElementById("log-box");
@@ -337,6 +374,118 @@ function setAgent(id,state){
 async function api(path,method="GET",body=null){
   try{const opts={method,headers:{"Content-Type":"application/json"}};if(body)opts.body=JSON.stringify(body);const r=await fetch(path,opts);return await r.json();}
   catch(e){console.warn("API:",e);return null;}
+}
+
+// ═══ MONEY MANAGEMENT ═════════════════════════════════════════════════
+function berechneMoneyManagement(stats, kapital, startkapital) {
+  const wr      = stats.win_rate || 0;
+  const dd      = stats.max_drawdown || 0;
+  const trades  = stats.gesamt_trades || 0;
+  const verlust = stats.verloren || 0;
+
+  // Streak berechnen (vereinfacht aus letzte Trades)
+  let streak = 0;
+
+  // Risiko-Stufe bestimmen
+  let stufe = "NORMAL";
+  let risikoProzent = 2.0;
+  let stufeColor = "var(--cyan)";
+  let statusColor = "var(--green)";
+  let statusText = "NORMAL";
+  let alert = null;
+
+  // Drawdown Schutz
+  if (dd > 10) {
+    stufe = "KRITISCH";
+    risikoProzent = 0;
+    stufeColor = "var(--red)";
+    statusColor = "var(--red)";
+    statusText = "ANALYSE PAUSIERT";
+    alert = `⛔ Drawdown ${dd.toFixed(1)}% überschreitet 10% Limit! Analyse pausiert bis Erholung.`;
+  } else if (dd > 5) {
+    stufe = "VORSICHT";
+    risikoProzent = 1.0;
+    stufeColor = "var(--orange)";
+    statusColor = "var(--orange)";
+    statusText = "VORSICHT";
+    alert = `⚠️ Drawdown ${dd.toFixed(1)}% → Einsatz auf 1% reduziert.`;
+  } else if (trades >= 5) {
+    // Genug Trades für Win Rate Bewertung
+    if (wr >= 60) {
+      stufe = "AGGRESSIV";
+      risikoProzent = 3.0;
+      stufeColor = "var(--green)";
+      statusText = "AGGRESSIV";
+    } else if (wr < 40) {
+      stufe = "DEFENSIV";
+      risikoProzent = 1.0;
+      stufeColor = "var(--orange)";
+      statusText = "DEFENSIV";
+    }
+  }
+
+  const einsatz = Math.max(1, Math.round(kapital * risikoProzent / 100 * 100) / 100);
+  const riskBarWidth = Math.min(100, (risikoProzent / 4) * 100);
+  const riskBarColor = risikoProzent >= 3 ? "var(--green)" : risikoProzent >= 2 ? "var(--cyan)" : risikoProzent >= 1 ? "var(--orange)" : "var(--red)";
+
+  return { stufe, risikoProzent, einsatz, stufeColor, statusColor, statusText, alert, riskBarWidth, riskBarColor };
+}
+
+function updateMoneyManagement(stats, kapital, startkapital) {
+  const mm = berechneMoneyManagement(stats, kapital, startkapital);
+
+  // Status Badge
+  const statusEl = document.getElementById("mm-status");
+  if (statusEl) {
+    statusEl.textContent = mm.statusText;
+    statusEl.style.cssText = `background:${mm.statusColor}20;color:${mm.statusColor};border:1px solid ${mm.statusColor}33`;
+  }
+
+  // Einsatz
+  const einsatzEl = document.getElementById("mm-einsatz");
+  if (einsatzEl) {
+    einsatzEl.textContent = `€${fmt(mm.einsatz)}`;
+    einsatzEl.style.color = mm.stufeColor;
+  }
+  const einsatzSub = document.getElementById("mm-einsatz-sub");
+  if (einsatzSub) einsatzSub.textContent = `${mm.risikoProzent}% des Kapitals`;
+
+  // Stufe
+  const stufeEl = document.getElementById("mm-stufe");
+  if (stufeEl) {
+    stufeEl.textContent = mm.stufe;
+    stufeEl.style.color = mm.stufeColor;
+  }
+  const stufeSub = document.getElementById("mm-stufe-sub");
+  if (stufeSub) stufeSub.textContent = `Win Rate: ${(stats.win_rate||0).toFixed(1)}%`;
+
+  // Risk Bar
+  const riskBar = document.getElementById("mm-risk-bar");
+  if (riskBar) {
+    riskBar.style.width = mm.riskBarWidth + "%";
+    riskBar.style.background = mm.riskBarColor;
+  }
+
+  // Drawdown
+  const ddEl = document.getElementById("mm-drawdown");
+  const ddSub = document.getElementById("mm-drawdown-sub");
+  const dd = stats.max_drawdown || 0;
+  if (ddEl) {
+    ddEl.textContent = dd > 10 ? "KRITISCH" : dd > 5 ? "WARNUNG" : "OK";
+    ddEl.style.color = dd > 10 ? "var(--red)" : dd > 5 ? "var(--orange)" : "var(--green)";
+  }
+  if (ddSub) ddSub.textContent = `Max DD: ${dd.toFixed(2)}%`;
+
+  // Alert
+  const alertEl = document.getElementById("mm-alert");
+  if (alertEl) {
+    if (mm.alert) {
+      alertEl.textContent = mm.alert;
+      alertEl.style.display = "block";
+    } else {
+      alertEl.style.display = "none";
+    }
+  }
 }
 
 // ═══ TABS ═════════════════════════════════════════════════════════════
@@ -377,6 +526,9 @@ async function ladeDemo(){
   document.getElementById("dk-progress").style.width=pct+"%";
   document.getElementById("dk-progress").style.background=pct>=100?"var(--green)":pct>=90?"var(--gold)":"var(--red)";
   document.getElementById("demo-badge").textContent=`💰 Demo: €${fmt(kapital)}`;
+
+  // Money Management aktualisieren
+  updateMoneyManagement(stats, kapital, start);
 
   renderDemoStats(stats);
   renderChart(data.tages_snapshots||[]);
@@ -451,47 +603,83 @@ function renderChart(snapshots){
 function renderOffeneTrades(trades){
   const wrap=document.getElementById("offene-trades-wrap");
   if(!trades.length){wrap.innerHTML=`<div class="empty"><div class="empty-i">🔄</div><div class="empty-t">Keine offenen Trades</div></div>`;return;}
-  wrap.innerHTML=`<table class="trade-table"><thead><tr>
-    <th style="text-align:left">ID</th><th>Asset</th><th>Action</th><th>Einsatz</th><th>SL%</th><th>TP%</th><th>Konfidenz</th><th>Geöffnet</th><th>Aktion</th>
+  wrap.innerHTML=`<div style="overflow-x:auto"><table class="trade-table"><thead><tr>
+    <th style="text-align:left">ID</th>
+    <th>Asset</th>
+    <th>Action</th>
+    <th>Einsatz</th>
+    <th>Entry</th>
+    <th style="color:var(--red)">SL Preis</th>
+    <th style="color:var(--green)">TP Preis</th>
+    <th>SL%</th>
+    <th>TP%</th>
+    <th>Konfidenz</th>
+    <th>Geöffnet</th>
+    <th>Aktion</th>
   </tr></thead><tbody>
-  ${trades.map(t=>`<tr>
-    <td>${t.id}</td>
-    <td style="color:var(--cyan);font-weight:700">${t.asset||"—"}</td>
-    <td><span style="color:${t.action==="buy"?"var(--green)":"var(--red)"};font-weight:700">${(t.action||"").toUpperCase()}</span></td>
-    <td>€${fmt(t.einsatz)}</td>
-    <td style="color:var(--red)">${t.sl_pct||0}%</td>
-    <td style="color:var(--green)">${t.tp_pct||0}%</td>
-    <td style="color:${(t.konfidenz||0)>=70?"var(--green)":"var(--gold)"}">${t.konfidenz||0}%</td>
-    <td style="color:var(--muted);font-size:9px">${t.geoeffnet_am?new Date(t.geoeffnet_am).toLocaleString("de-AT"):"—"}</td>
-    <td><div style="display:flex;gap:4px">
-      <button onclick="schliesseDemo('${t.id}','gewonnen')" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
-      <button onclick="schliesseDemo('${t.id}','verloren')" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
-    </div></td>
-  </tr>`).join("")}
-  </tbody></table>`;
+  ${trades.map(t=>{
+    const entry = parseFloat(t.entry_price||0);
+    const slPct = parseFloat(t.sl_pct||1.5);
+    const tpPct = parseFloat(t.tp_pct||3.0);
+    const isBuy = t.action === "buy";
+
+    // Absoluter SL/TP Preis berechnen
+    let slPreis = "—", tpPreis = "—";
+    if(entry > 0){
+      if(isBuy){
+        slPreis = fmtP(entry * (1 - slPct/100));
+        tpPreis = fmtP(entry * (1 + tpPct/100));
+      } else {
+        slPreis = fmtP(entry * (1 + slPct/100));
+        tpPreis = fmtP(entry * (1 - tpPct/100));
+      }
+    }
+
+    return`<tr>
+      <td>${t.id}</td>
+      <td style="color:var(--cyan);font-weight:700">${t.asset||"—"}</td>
+      <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${(t.action||"").toUpperCase()}</span></td>
+      <td>€${fmt(t.einsatz)}</td>
+      <td style="color:var(--gold);font-weight:600">${entry>0?fmtP(entry):"—"}</td>
+      <td style="color:var(--red);font-weight:600">${slPreis}</td>
+      <td style="color:var(--green);font-weight:600">${tpPreis}</td>
+      <td style="color:var(--red)">${slPct}%</td>
+      <td style="color:var(--green)">${tpPct}%</td>
+      <td style="color:${(t.konfidenz||0)>=70?"var(--green)":"var(--gold)"}">${t.konfidenz||0}%</td>
+      <td style="color:var(--muted);font-size:9px">${t.geoeffnet_am?new Date(t.geoeffnet_am).toLocaleString("de-AT"):"—"}</td>
+      <td><div style="display:flex;gap:4px">
+        <button onclick="schliesseDemo('${t.id}','gewonnen')" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
+        <button onclick="schliesseDemo('${t.id}','verloren')" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
+      </div></td>
+    </tr>`;
+  }).join("")}
+  </tbody></table></div>`;
 }
 
 function renderLetzteTrades(trades){
   const wrap=document.getElementById("letzte-trades-wrap");
   if(!trades.length){wrap.innerHTML=`<div class="empty"><div class="empty-i">📋</div><div class="empty-t">Noch keine abgeschlossenen Trades</div></div>`;return;}
-  wrap.innerHTML=`<table class="trade-table"><thead><tr>
-    <th style="text-align:left">ID</th><th>Asset</th><th>Action</th><th>Einsatz</th><th>Ergebnis</th><th>P&L</th><th>Geschlossen</th>
+  wrap.innerHTML=`<div style="overflow-x:auto"><table class="trade-table"><thead><tr>
+    <th style="text-align:left">ID</th><th>Asset</th><th>Action</th>
+    <th>Entry</th><th>Einsatz</th><th>Ergebnis</th><th>P&L</th><th>Geschlossen</th>
   </tr></thead><tbody>
   ${trades.map(t=>{
     const pnl=t.pnl||0;
+    const entry=parseFloat(t.entry_price||0);
     const color=t.status==="gewonnen"?"var(--green)":t.status==="verloren"?"var(--red)":"var(--muted)";
     const emoji=t.status==="gewonnen"?"✅":t.status==="verloren"?"❌":"⏸";
     return`<tr>
       <td>${t.id}</td>
       <td style="color:var(--cyan);font-weight:700">${t.asset||"—"}</td>
       <td><span style="color:${t.action==="buy"?"var(--green)":"var(--red)"}">${(t.action||"").toUpperCase()}</span></td>
+      <td style="color:var(--gold)">${entry>0?fmtP(entry):"—"}</td>
       <td>€${fmt(t.einsatz)}</td>
       <td><span style="color:${color};font-weight:700">${emoji} ${(t.status||"").toUpperCase()}</span></td>
       <td style="color:${pnl>=0?"var(--green)":"var(--red)"};font-weight:700">${pnl>=0?"+":""}€${fmt(pnl)}</td>
       <td style="color:var(--muted);font-size:9px">${t.geschlossen_am?new Date(t.geschlossen_am).toLocaleString("de-AT"):"—"}</td>
     </tr>`;
   }).join("")}
-  </tbody></table>`;
+  </tbody></table></div>`;
 }
 
 async function schliesseDemo(id,ergebnis){
@@ -510,9 +698,9 @@ async function ladeAktiveConfig(){
   if(!data)return;
   cfg.assets   = data.assets   || cfg.assets;
   cfg.strategy = data.strategy || cfg.strategy;
-  cfg.risk_pct = data.risk_pct || cfg.risk;
-  cfg.sl_pct   = data.sl_pct   || cfg.sl;
-  cfg.tp_pct   = data.tp_pct   || cfg.tp;
+  cfg.risk     = data.risk_pct || cfg.risk;
+  cfg.sl       = data.sl_pct   || cfg.sl;
+  cfg.tp       = data.tp_pct   || cfg.tp;
   cfg.size     = data.size     || cfg.size;
   cfg.conf     = data.conf     || cfg.conf;
   cfg.mode     = data.mode     || cfg.mode;
@@ -535,19 +723,13 @@ function updateConfigPreview(){
 
 async function configSpeichern(){
   const r=await api("/config/speichern","POST",{
-    assets:   cfg.assets,
-    strategy: cfg.strategy,
-    risk_pct: cfg.risk,
-    sl_pct:   cfg.sl,
-    tp_pct:   cfg.tp,
-    size:     cfg.size,
-    conf:     cfg.conf,
-    mode:     cfg.mode,
+    assets:cfg.assets,strategy:cfg.strategy,
+    risk_pct:cfg.risk,sl_pct:cfg.sl,tp_pct:cfg.tp,
+    size:cfg.size,conf:cfg.conf,mode:cfg.mode,
   });
   if(r&&r.status==="gespeichert"){
     toast("✅ Konfiguration gespeichert!","ok");
     document.getElementById("strat-badge").textContent=`🎯 Strategie: ${cfg.strategy}`;
-    logMsg("💾","Konfiguration gespeichert: "+cfg.strategy,"log-success");
   }else toast("Fehler beim Speichern","err");
 }
 
@@ -574,7 +756,7 @@ function renderStrats(){
     const div=document.createElement("div");
     div.style.cssText=`background:${sel?"#22d3ee15":"var(--s)"};border:1px solid ${sel?"#22d3ee66":"var(--b)"};border-radius:6px;padding:8px;cursor:pointer;text-align:center;transition:all .15s`;
     div.onclick=()=>{cfg.strategy=s.id;renderStrats();updateConfigPreview();};
-    div.innerHTML=`<div style="font-size:10px;font-weight:600;color:${sel?"var(--cyan)":"var(--text)"};font-family:var(--font)">${s.name}${sel?" ◆":""}</div><div style="font-size:8px;color:var(--muted)">${s.tf}</div>`;
+    div.innerHTML=`<div style="font-size:10px;font-weight:600;color:${sel?"var(--cyan)":"var(--text)"}">${s.name}${sel?" ◆":""}</div><div style="font-size:8px;color:var(--muted)">${s.tf}</div>`;
     g.appendChild(div);
   });
 }
@@ -612,7 +794,7 @@ function renderModes(){
     const div=document.createElement("div");
     div.style.cssText=`background:${sel?m.c+"15":"var(--s)"};border:1px solid ${sel?m.c+"66":"var(--b)"};border-radius:6px;padding:9px 11px;cursor:pointer;transition:all .2s`;
     div.onclick=()=>{cfg.mode=m.id;renderModes();updateConfigPreview();};
-    div.innerHTML=`<div style="display:flex;justify-content:space-between"><span style="color:${sel?m.c:"var(--text)"};font-size:12px;font-weight:600;font-family:var(--font)">${m.l}${sel?" ◆":""}</span></div><div style="color:var(--muted);font-size:10px;margin-top:2px">${m.d}</div>`;
+    div.innerHTML=`<div style="display:flex;justify-content:space-between"><span style="color:${sel?m.c:"var(--text)"};font-size:12px;font-weight:600">${m.l}${sel?" ◆":""}</span></div><div style="color:var(--muted);font-size:10px;margin-top:2px">${m.d}</div>`;
     wrap.appendChild(div);
   });
 }
@@ -706,7 +888,6 @@ function renderSignals(){
 async function approveSig(i){
   signals[i].status="approved";renderSignals();
   toast("Demo-Trade geöffnet!","ok");
-  logMsg("⚡","Demo-Trade: "+signals[i].action.toUpperCase()+" "+signals[i].asset,"log-trade");
   setTimeout(ladeDemo,1000);
 }
 function rejectSig(i){signals[i].status="rejected";renderSignals();}
@@ -773,7 +954,6 @@ async function connectCap(){
   const email=document.getElementById("s-email").value;
   const pass=document.getElementById("s-pass").value;
   if(!email||!pass){toast("E-Mail und Passwort eingeben","err");return;}
-  toast("Verbinde...","inf");
   const r=await api("/connect","POST");
   if(r&&r.connected){toast("Capital.com verbunden!","ok");ladeSettings();}
   else toast("Verbindung fehlgeschlagen","err");
