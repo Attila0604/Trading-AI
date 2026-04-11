@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.0 - Update 09.04.2026
+# Trading Multi-Agent v3.0 - Update 11.04.2026
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -30,6 +30,10 @@ POSITION_SIZE   = float(os.getenv("POSITION_SIZE_EUR", "1000"))
 AUTO_TRADE      = os.getenv("AUTO_TRADE", "false").lower() == "true"
 DATA_DIR        = os.getenv("DATA_DIR", "/app/data")
 MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
+DASHBOARD_URL   = os.getenv("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
+
+# Assets die am Wochenende handelbar sind
+WOCHENENDE_ASSETS = {"BTC/USD", "ETH/USD"}
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -53,6 +57,21 @@ active_config = {
 }
 
 scheduler = BackgroundScheduler(timezone="Europe/Vienna")
+
+
+# ── Wochenende Check ──────────────────────────────────────────────────────────
+def ist_wochenende() -> bool:
+    """Samstag=5, Sonntag=6"""
+    return datetime.now().weekday() >= 5
+
+def asset_handelbar(asset: str) -> bool:
+    """Prüft ob ein Asset aktuell handelbar ist."""
+    if ist_wochenende():
+        handelbar = asset.upper() in WOCHENENDE_ASSETS
+        if not handelbar:
+            log.info(f"⚠️ Wochenende → {asset} nicht handelbar")
+        return handelbar
+    return True
 
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
@@ -86,6 +105,7 @@ def ergebnis_check_job():
 
 
 async def _check_trade_results(offene: list):
+    """Prüft ob SL oder TP getroffen wurde via Capital.com Preise"""
     if not capital.is_connected():
         await capital.connect()
 
@@ -153,7 +173,9 @@ async def _check_trade_results(offene: list):
                     f"📈 Entry: {entry_price:.5f}\n"
                     f"📉 Aktuell: {current_price:.5f}\n"
                     f"💰 P&L: {'+' if geschlossen.get('pnl',0)>=0 else ''}€{geschlossen.get('pnl',0):.2f}\n"
-                    f"💼 Kapital: €{stats['aktuelles_kapital']:.2f}"
+                    f"💼 Kapital: €{stats['aktuelles_kapital']:.2f}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🌐 {DASHBOARD_URL}"
                 )
 
         except Exception as e:
@@ -190,7 +212,9 @@ async def lifespan(app: FastAPI):
         f"⚡ Auto-Trade: {'AN' if AUTO_TRADE else 'AUS'}\n"
         f"🔗 Capital.com: {'✅ Verbunden' if capital.is_connected() else '❌ Getrennt'}\n"
         f"📅 Tages-Report: 20:00 Uhr\n"
-        f"🔍 Ergebnis-Check: alle 4h"
+        f"🔍 Ergebnis-Check: alle 4h\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 {DASHBOARD_URL}"
     )
     yield
     scheduler.shutdown()
@@ -238,7 +262,8 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
     pipeline_running = True
     try:
         ts = datetime.now().strftime("%d.%m.%Y %H:%M")
-        log.info(f"PIPELINE START | {ts} | {req.strategy} | {req.assets}")
+        wochenende = ist_wochenende()
+        log.info(f"PIPELINE START | {ts} | {req.strategy} | {req.assets} | Wochenende: {wochenende}")
 
         result = await run_pipeline(
             assets=req.assets, strategy=req.strategy,
@@ -266,23 +291,49 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         latest_signals  = all_signals
         tracker.save_analysis(result)
 
-        # Demo-Trades öffnen mit Entry-Price
-        for signal in all_signals:
-            if signal.get("confidence", 0) >= active_config["conf"]:
-                entry_price = 0
-                try:
-                    epic        = asset_to_epic(signal["asset"])
-                    price_data  = await capital.get_prices(epic)
-                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
-                except Exception as pe:
-                    log.warning(f"Entry-Price Fehler [{signal['asset']}]: {pe}")
+        # Demo-Trades öffnen
+        trades_geoeffnet = 0
+        trades_übersprungen = 0
 
-                demo_trade = signal_oeffnen({
-                    **signal,
-                    "entry_price":  entry_price,
-                    "strategyUsed": result.get("strategyUsed", req.strategy),
-                })
-                log.info(f"Demo-Trade: {demo_trade['id']} | {signal['asset']} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
+        for signal in all_signals:
+            if signal.get("confidence", 0) < active_config["conf"]:
+                continue
+
+            asset = signal.get("asset", "")
+
+            # ── Wochenende Check ──────────────────────────────────────────
+            if not asset_handelbar(asset):
+                trades_übersprungen += 1
+                log.info(f"⏭ {asset} übersprungen → Wochenende")
+                continue
+            # ─────────────────────────────────────────────────────────────
+
+            # ── Entry-Price mit Retry ─────────────────────────────────────
+            entry_price = 0
+            for versuch in range(3):
+                try:
+                    epic       = asset_to_epic(asset)
+                    price_data = await capital.get_prices(epic)
+                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                    if entry_price > 0:
+                        log.info(f"✅ Entry-Price [{asset}]: {entry_price} (Versuch {versuch+1})")
+                        break
+                    await asyncio.sleep(2)
+                except Exception as pe:
+                    log.warning(f"Entry-Price Versuch {versuch+1} [{asset}]: {pe}")
+                    await asyncio.sleep(2)
+
+            if entry_price == 0:
+                log.warning(f"⚠️ Kein Entry-Price für {asset} nach 3 Versuchen")
+            # ─────────────────────────────────────────────────────────────
+
+            demo_trade = signal_oeffnen({
+                **signal,
+                "entry_price":  entry_price,
+                "strategyUsed": result.get("strategyUsed", req.strategy),
+            })
+            trades_geoeffnet += 1
+            log.info(f"Demo-Trade: {demo_trade['id']} | {asset} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
 
         score      = result.get("sessionScore", 0)
         overview   = result.get("marketOverview", "")
@@ -294,14 +345,22 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             f"🕐 {ts}\n"
             f"🎯 Score: *{score}/100*\n"
             f"🔧 Strategie: *{req.strategy}*\n"
-            f"💡 {overview}\n\n"
         )
+
+        if wochenende:
+            msg += f"📅 _Wochenende: nur BTC/ETH handelbar_\n"
+        if trades_übersprungen > 0:
+            msg += f"⏭ {trades_übersprungen} Asset(s) übersprungen (Wochenende)\n"
+
+        msg += f"💡 {overview}\n\n"
 
         for s in all_signals:
             arrow = "🟢 LONG" if s["action"] == "buy" else "🔴 SHORT"
             star  = "⭐ " if s.get("confidence", 0) >= active_config["conf"] else ""
+            handelbar = asset_handelbar(s.get("asset",""))
+            skip = "" if handelbar else " _(Wochenende - übersprungen)_"
             msg  += (
-                f"{arrow} *{star}{s['asset']}* | {s['confidence']}%\n"
+                f"{arrow} *{star}{s['asset']}* | {s['confidence']}%{skip}\n"
                 f"SL: {active_config['sl_pct']:.1f}% | TP: {active_config['tp_pct']:.1f}%\n"
                 f"_{s.get('summary', '')[:100]}_\n\n"
             )
@@ -313,13 +372,15 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 Demo-Kapital: *€{demo_stats['aktuelles_kapital']:.2f}*\n"
             f"📈 ROI: *{'+' if demo_stats['statistik']['roi'] >= 0 else ''}{demo_stats['statistik']['roi']:.1f}%*\n"
-            f"🎯 Win Rate: *{demo_stats['statistik']['win_rate']:.1f}%*"
+            f"🎯 Win Rate: *{demo_stats['statistik']['win_rate']:.1f}%*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🌐 {DASHBOARD_URL}"
         )
 
         send_whatsapp(msg.strip())
 
         if req.auto_execute:
-            strong = [s for s in all_signals if s.get("confidence", 0) >= active_config["conf"]]
+            strong = [s for s in all_signals if s.get("confidence", 0) >= active_config["conf"] and asset_handelbar(s.get("asset",""))]
             if strong:
                 await auto_execute_signals(strong, req.position_size)
 
@@ -522,6 +583,7 @@ async def status():
         "demo_kapital":      demo["aktuelles_kapital"],
         "demo_roi":          demo["statistik"]["roi"],
         "demo_win_rate":     demo["statistik"]["win_rate"],
+        "wochenende":        ist_wochenende(),
     }
 
 @app.post("/connect")
