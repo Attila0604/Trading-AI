@@ -9,12 +9,12 @@ LIVE_BASE = "https://api-capital.backend-capital.com/api/v1"
 
 class CapitalClient:
     def __init__(self):
-        self.base  = DEMO_BASE if os.getenv("CAPITAL_DEMO", "true").lower() == "true" else LIVE_BASE
-        self.email = os.getenv("CAPITAL_EMAIL", "")
+        self.base     = DEMO_BASE if os.getenv("CAPITAL_DEMO", "true").lower() == "true" else LIVE_BASE
+        self.email    = os.getenv("CAPITAL_EMAIL", "")
         self.password = os.getenv("CAPITAL_PASSWORD", "")
         self.api_key  = os.getenv("CAPITAL_API_KEY", "")
-        self.cst   = None
-        self.token = None
+        self.cst      = None
+        self.token    = None
         self._account_id = None
         log.info(f"Capital.com Client | {'DEMO' if 'demo' in self.base else 'LIVE'} | {self.base}")
 
@@ -23,10 +23,8 @@ class CapitalClient:
 
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json", "X-CAP-API-KEY": self.api_key}
-        if self.cst:
-            h["CST"] = self.cst
-        if self.token:
-            h["X-SECURITY-TOKEN"] = self.token
+        if self.cst:   h["CST"] = self.cst
+        if self.token: h["X-SECURITY-TOKEN"] = self.token
         return h
 
     async def connect(self) -> bool:
@@ -54,29 +52,87 @@ class CapitalClient:
             log.error(f"Capital.com Verbindungsfehler: {e}")
             return False
 
-    async def _get(self, path: str) -> dict:
+    async def _get(self, path: str, retry: bool = True) -> dict:
+        """GET mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{self.base}{path}", headers=self._headers())
-            resp.raise_for_status()
-            return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(f"{self.base}{path}", headers=self._headers())
+                # ── Auto-Reconnect bei 401 ────────────────────────────────
+                if resp.status_code == 401 and retry:
+                    log.warning("Capital.com 401 → Session abgelaufen → Reconnect...")
+                    self.cst   = None
+                    self.token = None
+                    await asyncio.sleep(2)
+                    connected = await self.connect()
+                    if connected:
+                        return await self._get(path, retry=False)
+                    else:
+                        return {"error": "Reconnect fehlgeschlagen"}
+                # ─────────────────────────────────────────────────────────
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            log.error(f"GET {path} HTTP-Fehler {e.response.status_code}")
+            return {"error": f"HTTP {e.response.status_code}"}
+        except Exception as e:
+            log.error(f"GET {path} Fehler: {e}")
+            return {"error": str(e)}
 
-    async def _post(self, path: str, data: dict) -> dict:
+    async def _post(self, path: str, data: dict, retry: bool = True) -> dict:
+        """POST mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(f"{self.base}{path}", json=data, headers=self._headers())
-            resp.raise_for_status()
-            return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.post(f"{self.base}{path}", json=data, headers=self._headers())
+                # ── Auto-Reconnect bei 401 ────────────────────────────────
+                if resp.status_code == 401 and retry:
+                    log.warning("Capital.com 401 → Session abgelaufen → Reconnect...")
+                    self.cst   = None
+                    self.token = None
+                    await asyncio.sleep(2)
+                    connected = await self.connect()
+                    if connected:
+                        return await self._post(path, data, retry=False)
+                    else:
+                        return {"error": "Reconnect fehlgeschlagen"}
+                # ─────────────────────────────────────────────────────────
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            log.error(f"POST {path} HTTP-Fehler {e.response.status_code}")
+            return {"error": f"HTTP {e.response.status_code}"}
+        except Exception as e:
+            log.error(f"POST {path} Fehler: {e}")
+            return {"error": str(e)}
 
-    async def _delete(self, path: str) -> dict:
+    async def _delete(self, path: str, retry: bool = True) -> dict:
+        """DELETE mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.delete(f"{self.base}{path}", headers=self._headers())
-            resp.raise_for_status()
-            return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.delete(f"{self.base}{path}", headers=self._headers())
+                if resp.status_code == 401 and retry:
+                    log.warning("Capital.com 401 → Reconnect...")
+                    self.cst   = None
+                    self.token = None
+                    await asyncio.sleep(2)
+                    connected = await self.connect()
+                    if connected:
+                        return await self._delete(path, retry=False)
+                    else:
+                        return {"error": "Reconnect fehlgeschlagen"}
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPStatusError as e:
+            log.error(f"DELETE {path} HTTP-Fehler {e.response.status_code}")
+            return {"error": f"HTTP {e.response.status_code}"}
+        except Exception as e:
+            log.error(f"DELETE {path} Fehler: {e}")
+            return {"error": str(e)}
 
     async def get_account_info(self) -> dict:
         try:
@@ -85,13 +141,13 @@ class CapitalClient:
             if accounts:
                 acc = accounts[0]
                 return {
-                    "accountId":  acc.get("accountId"),
+                    "accountId":   acc.get("accountId"),
                     "accountName": acc.get("accountName"),
-                    "currency":   acc.get("preferred", False),
-                    "balance":    acc.get("balance", {}).get("balance", 0),
-                    "available":  acc.get("balance", {}).get("available", 0),
-                    "deposit":    acc.get("balance", {}).get("deposit", 0),
-                    "profitLoss": acc.get("balance", {}).get("profitLoss", 0),
+                    "currency":    acc.get("preferred", False),
+                    "balance":     acc.get("balance", {}).get("balance", 0),
+                    "available":   acc.get("balance", {}).get("available", 0),
+                    "deposit":     acc.get("balance", {}).get("deposit", 0),
+                    "profitLoss":  acc.get("balance", {}).get("profitLoss", 0),
                 }
             return {}
         except Exception as e:
@@ -101,14 +157,16 @@ class CapitalClient:
     async def get_prices(self, epic: str) -> dict:
         try:
             data = await self._get(f"/prices/{epic}?resolution=MINUTE&max=1")
+            if data.get("error"):
+                return {"epic": epic, "bid": None, "ask": None, "error": data["error"]}
             prices = data.get("prices", [])
             if prices:
                 p = prices[-1]
                 return {
-                    "epic":  epic,
-                    "bid":   p.get("closePrice", {}).get("bid"),
-                    "ask":   p.get("closePrice", {}).get("ask"),
-                    "time":  p.get("snapshotTimeUTC"),
+                    "epic": epic,
+                    "bid":  p.get("closePrice", {}).get("bid"),
+                    "ask":  p.get("closePrice", {}).get("ask"),
+                    "time": p.get("snapshotTimeUTC"),
                 }
             return {"epic": epic, "bid": None, "ask": None}
         except Exception as e:
@@ -118,20 +176,22 @@ class CapitalClient:
     async def get_positions(self) -> dict:
         try:
             data = await self._get("/positions")
+            if data.get("error"):
+                return {"positions": [], "count": 0}
             positions = []
             for p in data.get("positions", []):
                 pos = p.get("position", {})
                 mkt = p.get("market", {})
                 positions.append({
-                    "dealId":        pos.get("dealId"),
-                    "epic":          mkt.get("epic"),
-                    "direction":     pos.get("direction"),
-                    "size":          pos.get("size"),
-                    "openLevel":     pos.get("openLevel"),
-                    "currentBid":    mkt.get("bid"),
-                    "currentOffer":  mkt.get("offer"),
-                    "pnl":           pos.get("unrealisedPnl"),
-                    "createdDate":   pos.get("createdDateUTC"),
+                    "dealId":       pos.get("dealId"),
+                    "epic":         mkt.get("epic"),
+                    "direction":    pos.get("direction"),
+                    "size":         pos.get("size"),
+                    "openLevel":    pos.get("openLevel"),
+                    "currentBid":   mkt.get("bid"),
+                    "currentOffer": mkt.get("offer"),
+                    "pnl":          pos.get("unrealisedPnl"),
+                    "createdDate":  pos.get("createdDateUTC"),
                 })
             return {"positions": positions, "count": len(positions)}
         except Exception as e:
@@ -141,18 +201,16 @@ class CapitalClient:
     async def create_position(self, epic: str, direction: str, size: float,
                                stop_loss_pct: float = 1.5, take_profit_pct: float = 3.0) -> dict:
         try:
-            # Get current price first
-            price_data = await self.get_prices(epic)
+            price_data    = await self.get_prices(epic)
             current_price = price_data.get("ask") if direction == "BUY" else price_data.get("bid")
 
             payload = {
-                "epic":      epic,
-                "direction": direction.upper(),
-                "size":      str(size),
+                "epic":           epic,
+                "direction":      direction.upper(),
+                "size":           str(size),
                 "guaranteedStop": False,
             }
 
-            # Add SL/TP if we have price
             if current_price:
                 if direction.upper() == "BUY":
                     sl_level = round(current_price * (1 - stop_loss_pct / 100), 5)
@@ -165,7 +223,7 @@ class CapitalClient:
                 payload["profitLevel"] = tp_level
 
             log.info(f"Order: {direction} {epic} x{size} | SL: {payload.get('stopLevel')} | TP: {payload.get('profitLevel')}")
-            data = await self._post("/positions", payload)
+            data     = await self._post("/positions", payload)
             deal_ref = data.get("dealReference")
             log.info(f"✅ Order platziert | DealRef: {deal_ref}")
             return {"dealId": deal_ref, "status": "success", "data": data}
