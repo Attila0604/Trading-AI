@@ -186,7 +186,7 @@ async def _check_trade_results(offene: list):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(morgen_analyse_job,
-        trigger=CronTrigger(hour=7, minute=0, timezone="Europe/Vienna"),
+        trigger=CronTrigger(day_of_week="mon-fri", hour=7, minute=0, timezone="Europe/Vienna"),
         id="morgen_analyse", replace_existing=True)
     scheduler.add_job(tages_report_job,
         trigger=CronTrigger(hour=20, minute=0, timezone="Europe/Vienna"),
