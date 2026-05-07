@@ -4,6 +4,15 @@ from anthropic import Anthropic
 log = logging.getLogger(__name__)
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
+# Asset → Capital.com Epic Mapping
+EPIC_MAP = {
+    "BTC/USD": "BTCUSD",
+    "ETH/USD": "ETHUSD",
+    "EUR/USD": "EURUSD",
+    "XAU/USD": "GOLD",
+    "US500":   "US500",
+}
+
 
 def call_claude(user_prompt: str, system_prompt: str, web_search: bool = False) -> str:
     kwargs = dict(
@@ -23,27 +32,19 @@ def parse_json(raw: str, fallback):
     if not raw or not raw.strip():
         log.warning("Leere LLM-Antwort")
         return fallback
-
-    # 1. Direkter Parse-Versuch
     try:
         return json.loads(raw.strip())
     except json.JSONDecodeError:
         pass
-
-    # 2. Erstes JSON-Objekt ODER Array extrahieren (Vorspann ignorieren)
     obj_start = raw.find('{')
     arr_start = raw.find('[')
-
     candidates = [s for s in (obj_start, arr_start) if s != -1]
     if not candidates:
         log.warning(f"JSON-Parse-Fehler: Kein JSON gefunden | Raw: {raw[:200]}")
         return fallback
-
     start = min(candidates)
     open_char = raw[start]
     close_char = '}' if open_char == '{' else ']'
-
-    # Balancierte Klammern finden
     depth = 0
     for i, char in enumerate(raw[start:], start):
         if char == open_char:
@@ -58,7 +59,6 @@ def parse_json(raw: str, fallback):
                 except json.JSONDecodeError as e:
                     log.warning(f"JSON-Parse-Fehler: {e} | Raw: {raw[:200]}")
                     return fallback
-
     log.warning(f"JSON-Parse-Fehler: Unbalanciertes JSON | Raw: {raw[:200]}")
     return fallback
 
@@ -78,9 +78,70 @@ Antworte NUR mit JSON-Array (kein Markdown):
     return parse_json(raw, fallback)
 
 
-# ── AGENT 2: TECHNICAL ANALYST ──
-def tech_agent(assets: list[str], strategy: str, timeframe: str) -> list[dict]:
+# ── AGENT 2: TECHNICAL ANALYST (mit echten Marktdaten!) ──
+def tech_agent(assets: list[str], strategy: str, timeframe: str, market_data: dict = None) -> list[dict]:
     log.info(f"[Tech Analyst] Analysiere {assets} | Strategie: {strategy}")
+    from indicators import calculate_all_indicators
+
+    indicators_per_asset = {}
+    if market_data:
+        for asset in assets:
+            candles = market_data.get(asset, [])
+            if candles and len(candles) >= 30:
+                ind = calculate_all_indicators(candles)
+                if "error" not in ind:
+                    indicators_per_asset[asset] = ind
+                    log.info(
+                        f"[Tech Analyst] {asset}: Preis={ind.get('currentPrice')} "
+                        f"RSI={ind.get('rsi')} Trend={ind.get('trend')} "
+                        f"MACD={ind.get('macd', {}).get('trend')} "
+                        f"BB={ind.get('bollinger', {}).get('position')}"
+                    )
+
+    # Wenn echte Daten da → Claude interpretiert die echten Werte
+    if indicators_per_asset:
+        market_context = "\n".join([
+            f"- {asset}: Preis={d.get('currentPrice')}, RSI={d.get('rsi')}, "
+            f"Trend={d.get('trend')}, MACD={d.get('macd', {}).get('trend') if d.get('macd') else 'n/a'} "
+            f"(hist={d.get('macd', {}).get('histogram') if d.get('macd') else 'n/a'}), "
+            f"EMA20={d.get('ema20')}, EMA50={d.get('ema50')}, "
+            f"BB-Position={d.get('bollinger', {}).get('position') if d.get('bollinger') else 'n/a'}, "
+            f"BB-Width={d.get('bollinger', {}).get('width_pct') if d.get('bollinger') else 'n/a'}%, "
+            f"Confluence={d.get('confluenceScore')}/10"
+            for asset, d in indicators_per_asset.items()
+        ])
+        raw = call_claude(
+            f"""Du erhältst ECHTE berechnete Indikator-Werte aus 4H-Kerzen. Interpretiere sie.
+
+Strategie-Fokus: {strategy}. Zeitrahmen: {timeframe}.
+
+ECHTE MARKTDATEN:
+{market_context}
+
+Bewerte das Setup pro Asset. Verwende die ECHTEN RSI/MACD-Werte (nicht raten!).
+Antworte NUR mit JSON-Array:
+[{{"asset":"string","trend":"uptrend|downtrend|sideways","signal":"strong buy|buy|neutral|sell|strong sell","rsi":<echter RSI>,"macdSignal":"bullish|bearish|neutral","emaAlignment":"bullish|bearish|mixed","bbPosition":"upper|middle|lower|breakout","confluenceScore":1-10,"notes":"konkrete Begründung auf Deutsch"}}]""",
+            "Du bist ein Technical Analysis Agent. Du erhältst ECHTE berechnete Indikatorwerte und interpretierst sie. Antworte AUSSCHLIESSLICH mit validem JSON-Array. Übernimm die echten RSI-Werte aus den Daten.",
+        )
+        # Fallback: berechnete Werte direkt nutzen
+        fallback = []
+        for asset in assets:
+            ind = indicators_per_asset.get(asset, {})
+            fallback.append({
+                "asset":           asset,
+                "trend":           ind.get("trend", "sideways"),
+                "signal":          ind.get("signal", "neutral"),
+                "rsi":             ind.get("rsi", 50),
+                "macdSignal":      ind.get("macd", {}).get("trend", "neutral") if ind.get("macd") else "neutral",
+                "emaAlignment":    ind.get("emaAlignment", "mixed"),
+                "bbPosition":      ind.get("bollinger", {}).get("position", "middle") if ind.get("bollinger") else "middle",
+                "confluenceScore": ind.get("confluenceScore", 5),
+                "notes":           "Aus berechneten Indikatoren (Claude-Fallback)",
+            })
+        return parse_json(raw, fallback)
+
+    # Notfall-Pfad: keine Marktdaten verfügbar
+    log.warning("[Tech Analyst] ⚠️ Keine Marktdaten - falle auf Schätzung zurück")
     raw = call_claude(
         f"""Technische Analyse für: {', '.join(assets)}.
 Strategie-Fokus: {strategy}. Zeitrahmen: {timeframe}.
@@ -223,6 +284,7 @@ Antworte NUR mit JSON:
 async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: float = 2.0,
                        sl_pct: float = 1.5, tp_pct: float = 3.0, position_size: float = 1000) -> dict:
     import asyncio
+    from capital_client import CapitalClient
 
     log.info("=" * 60)
     log.info(f"TRADING PIPELINE START | {', '.join(assets)}")
@@ -232,9 +294,25 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     tf         = strat_info["timeframe"]
     loop       = asyncio.get_event_loop()
 
+    # ── 0. ECHTE MARKTDATEN HOLEN ──
+    log.info("[Market Data] Hole 4H-OHLC-Kerzen für Tech Analyst...")
+    capital = CapitalClient()
+    if not capital.is_connected():
+        await capital.connect()
+
+    market_data = {}
+    for asset in assets:
+        epic = EPIC_MAP.get(asset, asset.replace("/", ""))
+        candles = await capital.get_historical_prices(epic, "HOUR_4", 200)
+        if candles:
+            market_data[asset] = candles
+        else:
+            log.warning(f"[Market Data] {asset}: keine Kerzen empfangen")
+
+    # ── Pipeline ──
     news_data  = await loop.run_in_executor(None, news_agent, assets)
     await asyncio.sleep(30)
-    tech_data  = await loop.run_in_executor(None, tech_agent, assets, strategy, tf)
+    tech_data  = await loop.run_in_executor(None, tech_agent, assets, strategy, tf, market_data)
     await asyncio.sleep(30)
     macro_data = await loop.run_in_executor(None, macro_agent)
     await asyncio.sleep(30)
