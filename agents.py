@@ -19,11 +19,48 @@ def call_claude(user_prompt: str, system_prompt: str, web_search: bool = False) 
 
 
 def parse_json(raw: str, fallback):
-    try:
-        return json.loads(raw)
-    except Exception as e:
-        log.warning(f"JSON-Parse-Fehler: {e} | Raw: {raw[:200]}")
+    """Robuster JSON-Parser: behandelt Vorspann und Trailing-Text."""
+    if not raw or not raw.strip():
+        log.warning("Leere LLM-Antwort")
         return fallback
+
+    # 1. Direkter Parse-Versuch
+    try:
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Erstes JSON-Objekt ODER Array extrahieren (Vorspann ignorieren)
+    obj_start = raw.find('{')
+    arr_start = raw.find('[')
+
+    candidates = [s for s in (obj_start, arr_start) if s != -1]
+    if not candidates:
+        log.warning(f"JSON-Parse-Fehler: Kein JSON gefunden | Raw: {raw[:200]}")
+        return fallback
+
+    start = min(candidates)
+    open_char = raw[start]
+    close_char = '}' if open_char == '{' else ']'
+
+    # Balancierte Klammern finden
+    depth = 0
+    for i, char in enumerate(raw[start:], start):
+        if char == open_char:
+            depth += 1
+        elif char == close_char:
+            depth -= 1
+            if depth == 0:
+                try:
+                    parsed = json.loads(raw[start:i+1])
+                    log.info("JSON aus Antwort mit Vorspann extrahiert")
+                    return parsed
+                except json.JSONDecodeError as e:
+                    log.warning(f"JSON-Parse-Fehler: {e} | Raw: {raw[:200]}")
+                    return fallback
+
+    log.warning(f"JSON-Parse-Fehler: Unbalanciertes JSON | Raw: {raw[:200]}")
+    return fallback
 
 
 # ── AGENT 1: NEWS SENTINEL ──
