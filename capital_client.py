@@ -53,24 +53,19 @@ class CapitalClient:
             return False
 
     async def _get(self, path: str, retry: bool = True) -> dict:
-        """GET mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.get(f"{self.base}{path}", headers=self._headers())
-                # ── Auto-Reconnect bei 401 ────────────────────────────────
                 if resp.status_code == 401 and retry:
                     log.warning("Capital.com 401 → Session abgelaufen → Reconnect...")
                     self.cst   = None
                     self.token = None
                     await asyncio.sleep(2)
-                    connected = await self.connect()
-                    if connected:
+                    if await self.connect():
                         return await self._get(path, retry=False)
-                    else:
-                        return {"error": "Reconnect fehlgeschlagen"}
-                # ─────────────────────────────────────────────────────────
+                    return {"error": "Reconnect fehlgeschlagen"}
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as e:
@@ -81,24 +76,19 @@ class CapitalClient:
             return {"error": str(e)}
 
     async def _post(self, path: str, data: dict, retry: bool = True) -> dict:
-        """POST mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(f"{self.base}{path}", json=data, headers=self._headers())
-                # ── Auto-Reconnect bei 401 ────────────────────────────────
                 if resp.status_code == 401 and retry:
                     log.warning("Capital.com 401 → Session abgelaufen → Reconnect...")
                     self.cst   = None
                     self.token = None
                     await asyncio.sleep(2)
-                    connected = await self.connect()
-                    if connected:
+                    if await self.connect():
                         return await self._post(path, data, retry=False)
-                    else:
-                        return {"error": "Reconnect fehlgeschlagen"}
-                # ─────────────────────────────────────────────────────────
+                    return {"error": "Reconnect fehlgeschlagen"}
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as e:
@@ -109,7 +99,6 @@ class CapitalClient:
             return {"error": str(e)}
 
     async def _delete(self, path: str, retry: bool = True) -> dict:
-        """DELETE mit automatischem Reconnect bei 401"""
         if not self.is_connected():
             await self.connect()
         try:
@@ -120,11 +109,9 @@ class CapitalClient:
                     self.cst   = None
                     self.token = None
                     await asyncio.sleep(2)
-                    connected = await self.connect()
-                    if connected:
+                    if await self.connect():
                         return await self._delete(path, retry=False)
-                    else:
-                        return {"error": "Reconnect fehlgeschlagen"}
+                    return {"error": "Reconnect fehlgeschlagen"}
                 resp.raise_for_status()
                 return resp.json()
         except httpx.HTTPStatusError as e:
@@ -172,6 +159,46 @@ class CapitalClient:
         except Exception as e:
             log.error(f"get_prices {epic} Fehler: {e}")
             return {"error": str(e)}
+
+    async def get_historical_prices(self, epic: str, resolution: str = "HOUR_4", count: int = 200) -> list:
+        """
+        Historische OHLC-Kerzen.
+        resolution: MINUTE, MINUTE_5, MINUTE_15, MINUTE_30, HOUR, HOUR_4, DAY, WEEK
+        count: Anzahl Kerzen (max 1000)
+        Returns: Liste von {time, open, high, low, close, volume} - Mid-Preise
+        """
+        try:
+            data = await self._get(f"/prices/{epic}?resolution={resolution}&max={count}")
+            if data.get("error"):
+                log.warning(f"get_historical_prices {epic}: {data['error']}")
+                return []
+            candles = []
+            for p in data.get("prices", []):
+                op = p.get("openPrice", {})  or {}
+                hp = p.get("highPrice", {})  or {}
+                lp = p.get("lowPrice", {})   or {}
+                cp = p.get("closePrice", {}) or {}
+                
+                # Mid-Preise (Bid/Ask gemittelt)
+                def mid(d):
+                    bid, ask = d.get("bid"), d.get("ask")
+                    if bid is None or ask is None:
+                        return bid if bid is not None else ask
+                    return (bid + ask) / 2
+                
+                candles.append({
+                    "time":   p.get("snapshotTimeUTC"),
+                    "open":   mid(op),
+                    "high":   mid(hp),
+                    "low":    mid(lp),
+                    "close":  mid(cp),
+                    "volume": p.get("lastTradedVolume", 0),
+                })
+            log.info(f"📊 {epic}: {len(candles)} Kerzen ({resolution}) geladen")
+            return candles
+        except Exception as e:
+            log.error(f"get_historical_prices {epic} Fehler: {e}")
+            return []
 
     async def get_positions(self) -> dict:
         try:
