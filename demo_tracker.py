@@ -24,7 +24,18 @@ def _lade_daten() -> dict:
     if DEMO_FILE.exists():
         try:
             with open(DEMO_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                daten = json.load(f)
+
+            # ── Auto-Migration: Startkapital aus ENV var anpassen ──
+            if abs(daten.get("startkapital", 0) - STARTKAPITAL) > 0.01:
+                alte_pnl = daten["aktuelles_kapital"] - daten["startkapital"]
+                daten["startkapital"]      = STARTKAPITAL
+                daten["aktuelles_kapital"] = round(STARTKAPITAL + alte_pnl, 2)
+                _speichere_daten(daten)
+                log.info(f"💰 Kapital migriert: €{STARTKAPITAL:.2f} (PnL erhalten: €{alte_pnl:.2f})")
+            # ──────────────────────────────────────────────────────
+
+            return daten
         except Exception as e:
             log.error(f"Demo-Daten laden Fehler: {e}")
     return _init_daten()
@@ -102,7 +113,7 @@ def signal_oeffnen(signal: dict) -> dict:
         "potenz_gewinn":   tp_absolut,
         "potenz_verlust":  sl_absolut,
         "rr":              round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0,
-        "entry_price":     float(signal.get("entry_price", 0)),  # ← NEU
+        "entry_price":     float(signal.get("entry_price", 0)),
         "status":          "offen",
         "geoeffnet_am":    datetime.now().isoformat(),
         "geschlossen_am":  None,
