@@ -13,7 +13,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 DATA_DIR       = os.getenv("DATA_DIR", "/app/data")
-STARTKAPITAL   = float(os.getenv("DEMO_STARTKAPITAL", "10000"))
+STARTKAPITAL   = float(os.getenv("DEMO_STARTKAPITAL", "1000"))
 RISIKO_PROZENT = float(os.getenv("MAX_RISK_PCT", "5"))
 SL_PROZENT     = float(os.getenv("STOP_LOSS_PCT", "1.0"))
 TP_PROZENT     = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
