@@ -271,18 +271,11 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             tp_pct=req.tp_pct, position_size=req.position_size,
         )
 
-        # ── FIX: SL/TP Werte korrigieren ─────────────────────────────────
+       # ── FIX: SL/TP IMMER mit aktiven Werten überschreiben ────────────
+        # Die KI darf nicht über Risk-Settings entscheiden
         for decision in result.get("decisions", []):
-            try:
-                if float(decision.get("stopLoss", 0)) > 20:
-                    decision["stopLoss"] = active_config["sl_pct"]
-                    log.info(f"SL korrigiert: {decision['asset']} → {active_config['sl_pct']}%")
-                if float(decision.get("takeProfit", 0)) > 20:
-                    decision["takeProfit"] = active_config["tp_pct"]
-                    log.info(f"TP korrigiert: {decision['asset']} → {active_config['tp_pct']}%")
-            except Exception:
-                decision["stopLoss"]   = active_config["sl_pct"]
-                decision["takeProfit"] = active_config["tp_pct"]
+            decision["stopLoss"]   = active_config["sl_pct"]
+            decision["takeProfit"] = active_config["tp_pct"]
         # ─────────────────────────────────────────────────────────────────
 
         latest_analysis = result
