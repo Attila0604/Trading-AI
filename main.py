@@ -21,7 +21,11 @@ from demo_tracker import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-ASSETS          = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500").split(",")
+# --- HIER WURDE DER CODE GEHÄRTET ---
+RAW_ASSETS      = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500")
+ASSETS          = [a.strip() for a in RAW_ASSETS.split(",") if a.strip()]
+# ------------------------------------
+
 STRATEGY        = os.getenv("TRADING_STRATEGY", "adaptive")
 MAX_RISK_PCT    = float(os.getenv("MAX_RISK_PCT", "2"))
 STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT", "1.5"))
@@ -111,8 +115,13 @@ async def _check_trade_results(offene: list):
 
     for trade in offene:
         try:
-            asset       = trade.get("asset", "")
+            # --- HIER WURDE DER CODE GEHÄRTET ---
+            asset       = trade.get("asset", "").strip()
+            if not asset:
+                continue
             epic        = asset_to_epic(asset)
+            # ------------------------------------
+            
             entry_price = float(trade.get("entry_price", 0))
             action      = trade.get("action", "buy")
             sl_pct      = float(trade.get("sl_pct", STOP_LOSS_PCT))
@@ -306,6 +315,8 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             for versuch in range(3):
                 try:
                     epic       = asset_to_epic(asset)
+                    if not epic:
+                        continue
                     price_data = await capital.get_prices(epic)
                     entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
                     if entry_price > 0:
@@ -410,14 +421,19 @@ async def auto_execute_signals(signals: list, size: float):
     send_whatsapp(f"⚡ Auto-Trade: {executed} ausgeführt | {failed} fehlgeschlagen")
 
 
+# --- HIER WURDE DER CODE GEHÄRTET ---
 def asset_to_epic(asset: str) -> str:
+    if not asset:
+        return ""
+    clean_asset = asset.strip().upper()
     return {
         "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
         "AUD/USD": "AUDUSD", "USD/CHF": "USDCHF",
         "BTC/USD": "BTCUSD", "ETH/USD": "ETHUSD",
         "XAU/USD": "GOLD",   "XAG/USD": "SILVER",
         "US500": "US500",    "US100": "USTEC", "DE40": "DE40",
-    }.get(asset.upper(), asset.replace("/", ""))
+    }.get(clean_asset, clean_asset.replace("/", ""))
+# ------------------------------------
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
