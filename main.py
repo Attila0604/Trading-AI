@@ -21,10 +21,10 @@ from demo_tracker import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-# --- HIER WURDE DER CODE GEHÄRTET ---
+# --- HIER WURDE DER CODE GEHÄRTET (Assets) ---
 RAW_ASSETS      = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500")
 ASSETS          = [a.strip() for a in RAW_ASSETS.split(",") if a.strip()]
-# ------------------------------------
+# ---------------------------------------------
 
 STRATEGY        = os.getenv("TRADING_STRATEGY", "adaptive")
 MAX_RISK_PCT    = float(os.getenv("MAX_RISK_PCT", "2"))
@@ -115,12 +115,16 @@ async def _check_trade_results(offene: list):
 
     for trade in offene:
         try:
-            # --- HIER WURDE DER CODE GEHÄRTET ---
+            # --- HIER WURDE DER CODE GEHÄRTET (Sicheres Asset) ---
             asset       = trade.get("asset", "").strip()
             if not asset:
                 continue
             epic        = asset_to_epic(asset)
-            # ------------------------------------
+            # -----------------------------------------------------
+            
+            # --- HIER WURDE DER CODE GEHÄRTET (Sichere ID) ---
+            trade_id    = trade.get("id", trade.get("trade_id", "Unbekannt"))
+            # -------------------------------------------------
             
             entry_price = float(trade.get("entry_price", 0))
             action      = trade.get("action", "buy")
@@ -138,7 +142,7 @@ async def _check_trade_results(offene: list):
             geoeffnet     = datetime.fromisoformat(trade["geoeffnet_am"])
             alter_std     = (datetime.now() - geoeffnet).total_seconds() / 3600
 
-            log.info(f"🔍 {trade['id']} | {asset} | Entry: {entry_price} | Aktuell: {current_price} | {alter_std:.1f}h")
+            log.info(f"🔍 {trade_id} | {asset} | Entry: {entry_price} | Aktuell: {current_price} | {alter_std:.1f}h")
 
             ergebnis = None
 
@@ -164,10 +168,10 @@ async def _check_trade_results(offene: list):
 
             if ergebnis is None and alter_std > 48:
                 ergebnis = "verloren"
-                log.info(f"⏰ Trade {trade['id']} nach 48h geschlossen")
+                log.info(f"⏰ Trade {trade_id} nach 48h geschlossen")
 
             if ergebnis:
-                geschlossen = trade_schliessen(trade["id"], ergebnis)
+                geschlossen = trade_schliessen(trade_id, ergebnis)
                 stats       = get_statistik()
                 tracker.save_trade({
                     **trade,
@@ -188,7 +192,7 @@ async def _check_trade_results(offene: list):
                 )
 
         except Exception as e:
-            log.error(f"Ergebnis-Check Fehler [{trade.get('id')}]: {e}")
+            log.error(f"Ergebnis-Check Fehler [{trade.get('id', 'Unbekannt')}]: {e}")
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -337,7 +341,14 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 "strategyUsed": result.get("strategyUsed", req.strategy),
             })
             trades_geoeffnet += 1
-            log.info(f"Demo-Trade: {demo_trade['id']} | {asset} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
+            
+            # --- HIER WURDE DER CODE GEHÄRTET (Sichere ID nach Trade-Erstellung) ---
+            if not isinstance(demo_trade, dict):
+                demo_trade = {}
+            
+            trade_id = demo_trade.get("id", demo_trade.get("trade_id", "Unbekannt"))
+            log.info(f"Demo-Trade: {trade_id} | {asset} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
+            # -----------------------------------------------------------------------
 
         score      = result.get("sessionScore", 0)
         overview   = result.get("marketOverview", "")
@@ -421,7 +432,7 @@ async def auto_execute_signals(signals: list, size: float):
     send_whatsapp(f"⚡ Auto-Trade: {executed} ausgeführt | {failed} fehlgeschlagen")
 
 
-# --- HIER WURDE DER CODE GEHÄRTET ---
+# --- HIER WURDE DER CODE GEHÄRTET (Epic Formatierung) ---
 def asset_to_epic(asset: str) -> str:
     if not asset:
         return ""
@@ -433,7 +444,7 @@ def asset_to_epic(asset: str) -> str:
         "XAU/USD": "GOLD",   "XAG/USD": "SILVER",
         "US500": "US500",    "US100": "USTEC", "DE40": "DE40",
     }.get(clean_asset, clean_asset.replace("/", ""))
-# ------------------------------------
+# --------------------------------------------------------
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
