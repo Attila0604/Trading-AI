@@ -138,6 +138,7 @@ async def _check_trade_results(offene: list):
                 continue
             current_price = float(current_price)
 
+            geoeffnet = None
             try:
                 geoeffnet = datetime.fromisoformat(str(trade.get("Geöffnet am", "")))
                 alter_std = (datetime.now() - geoeffnet).total_seconds() / 3600
@@ -153,21 +154,59 @@ async def _check_trade_results(offene: list):
                 if action in ("buy", "long"):
                     tp_level = entry_price * (1 + tp_pct / 100)
                     sl_level = entry_price * (1 - sl_pct / 100)
-                    if current_price >= tp_level:
-                        ergebnis = "gewonnen"
-                        log.info(f"✅ TP! {asset} | {entry_price:.5f} → {current_price:.5f}")
-                    elif current_price <= sl_level:
-                        ergebnis = "verloren"
-                        log.info(f"❌ SL! {asset} | {entry_price:.5f} → {current_price:.5f}")
                 else:
                     tp_level = entry_price * (1 - tp_pct / 100)
                     sl_level = entry_price * (1 + sl_pct / 100)
-                    if current_price <= tp_level:
-                        ergebnis = "gewonnen"
-                        log.info(f"✅ TP SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
-                    elif current_price >= sl_level:
-                        ergebnis = "verloren"
-                        log.info(f"❌ SL SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
+
+                # ── Intraday-Erkennung: Kerzen-Highs/Lows seit Eröffnung ──────────
+                # Fängt SL/TP-Treffer, die ZWISCHEN zwei 4h-Checks passiert sind.
+                try:
+                    kerzen = await capital.get_historical_prices(epic, "HOUR", 200)
+                except Exception as ce:
+                    log.warning(f"Kerzen-Fetch {asset} fehlgeschlagen: {ce}")
+                    kerzen = []
+
+                seit_open = []
+                for c in kerzen:
+                    ct = None
+                    try:
+                        ct = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                    except Exception:
+                        ct = None
+                    if ct is None or geoeffnet is None or ct >= geoeffnet:
+                        seit_open.append(c)
+                scan = seit_open if seit_open else kerzen
+
+                treffer = None
+                for c in scan:
+                    hi, lo = c.get("high"), c.get("low")
+                    if hi is None or lo is None:
+                        continue
+                    if action in ("buy", "long"):
+                        sl_hit, tp_hit = lo <= sl_level, hi >= tp_level
+                    else:
+                        sl_hit, tp_hit = hi >= sl_level, lo <= tp_level
+                    if sl_hit and tp_hit:
+                        treffer = "verloren"   # beide in einer Kerze → konservativ SL
+                        break
+                    if tp_hit:
+                        treffer = "gewonnen"; break
+                    if sl_hit:
+                        treffer = "verloren"; break
+
+                if treffer:
+                    ergebnis = treffer
+                    log.info(f"{'✅ TP' if treffer=='gewonnen' else '❌ SL'} (Intraday) {asset} | {len(scan)} Kerzen geprüft | {entry_price:.5f}")
+                else:
+                    # Fallback: Momentanpreis (falls keine Kerzendaten verfügbar)
+                    if action in ("buy", "long"):
+                        if current_price >= tp_level:   ergebnis = "gewonnen"
+                        elif current_price <= sl_level: ergebnis = "verloren"
+                    else:
+                        if current_price <= tp_level:   ergebnis = "gewonnen"
+                        elif current_price >= sl_level: ergebnis = "verloren"
+                    if ergebnis:
+                        log.info(f"{'✅ TP' if ergebnis=='gewonnen' else '❌ SL'} (Momentanpreis) {asset} | {current_price:.5f}")
 
             # Timeout: nach 48h zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
             if ergebnis is None and alter_std > 48:
