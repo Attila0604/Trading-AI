@@ -12,6 +12,7 @@ Professioneller Trading-Tracker mit:
 
 import os
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -102,13 +103,26 @@ def right():
 
 
 # ─── Main Tracker Class ──────────────────────────────────────────────────────
+def _locked(method):
+    """Serialisiert Schreib-/Lesezugriffe auf die Analyse-Datei."""
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    wrapper.__name__ = method.__name__
+    return wrapper
+
+
 class ExcelTracker:
     """Premium Trading Tracker with dashboard, charts, and conditional formatting."""
 
     SHEETS = ["Dashboard", "Demo-Kapital", "Trades", "Analyse-Log", "Performance", "Einstellungen"]
 
+    # Eigene Datei-Sperre - kein paralleles Schreiben in dieselbe Datei
+    _lock = threading.RLock()
+
     def __init__(self, data_dir: str):
-        self.path = Path(data_dir) / "Trading_Tracker.xlsx"
+        # Eigene Datei! Trennt Analyse-Log sauber von demo_tracker's Trading_Tracker.xlsx
+        self.path = Path(data_dir) / "Trading_Analyse.xlsx"
         self._init_workbook()
 
     def _init_workbook(self):
@@ -792,6 +806,7 @@ class ExcelTracker:
     def _load_wb(self):
         return openpyxl.load_workbook(self.path)
 
+    @_locked
     def save_analysis(self, result: dict):
         try:
             wb = self._load_wb()
@@ -831,6 +846,7 @@ class ExcelTracker:
         except Exception as e:
             log.error(f"save_analysis Fehler: {e}")
 
+    @_locked
     def save_trade(self, trade: dict):
         """Save trade with CORRECT P&L calculation based on actual outcome."""
         try:
@@ -889,6 +905,7 @@ class ExcelTracker:
         except Exception as e:
             log.error(f"save_trade Fehler: {e}")
 
+    @_locked
     def save_demo_snapshot(self, snapshot: dict):
         try:
             wb = self._load_wb()
@@ -972,6 +989,7 @@ class ExcelTracker:
         except Exception as e:
             log.warning(f"_refresh_equity_chart: {e}")
 
+    @_locked
     def get_trade_history(self) -> dict:
         try:
             wb = self._load_wb()
