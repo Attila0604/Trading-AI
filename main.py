@@ -17,6 +17,7 @@ from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
     get_offene_trades, get_statistik, generiere_tages_report
 )
+from money_management import get_modi, MODI
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ POSITION_SIZE   = float(os.getenv("POSITION_SIZE_EUR", "1000"))
 AUTO_TRADE      = os.getenv("AUTO_TRADE", "false").lower() == "true"
 DATA_DIR        = os.getenv("DATA_DIR", "/app/data")
 MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
+MM_MODUS        = os.getenv("MM_MODUS", "fixed_percent")
 DASHBOARD_URL   = os.getenv("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
 
 # Assets die am Wochenende handelbar sind
@@ -58,6 +60,7 @@ active_config = {
     "size":     POSITION_SIZE,
     "conf":     MIN_CONFIDENCE,
     "mode":     "semi",
+    "mm_modus": MM_MODUS,
 }
 
 scheduler = BackgroundScheduler(timezone="Europe/Vienna")
@@ -222,6 +225,7 @@ async def lifespan(app: FastAPI):
         f"📊 Analyse: täglich 07:00 Uhr\n"
         f"💹 Assets: {', '.join(active_config['assets'])}\n"
         f"🎯 Strategie: {active_config['strategy']}\n"
+        f"💵 Money-Mgmt: {MODI.get(active_config['mm_modus'], {}).get('name', active_config['mm_modus'])}\n"
         f"⚡ Auto-Trade: {'AN' if AUTO_TRADE else 'AUS'}\n"
         f"🔗 Capital.com: {'✅ Verbunden' if capital.is_connected() else '❌ Getrennt'}\n"
         f"📅 Tages-Report: 20:00 Uhr\n"
@@ -264,6 +268,7 @@ class ConfigRequest(BaseModel):
     size: float = None
     conf: int = None
     mode: str = None
+    mm_modus: str = None
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -301,6 +306,16 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         trades_geoeffnet = 0
         trades_übersprungen = 0
 
+        # ── Volatilität pro Asset aus den Tech-Reports (für volatility-Modus) ──
+        vola_lookup = {}
+        for t in result.get("agentReports", {}).get("tech", []):
+            asset_name = t.get("asset")
+            bb = t.get("bollinger") or {}
+            width = bb.get("width_pct")
+            if asset_name and width is not None:
+                vola_lookup[asset_name] = width
+        # ───────────────────────────────────────────────────────────────────────
+
         for signal in all_signals:
             if signal.get("confidence", 0) < active_config["conf"]:
                 continue
@@ -337,8 +352,11 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
             demo_trade = signal_oeffnen({
                 **signal,
-                "entry_price":  entry_price,
-                "strategyUsed": result.get("strategyUsed", req.strategy),
+                "entry_price":    entry_price,
+                "strategyUsed":   result.get("strategyUsed", req.strategy),
+                "mm_modus":       active_config["mm_modus"],
+                "volatility_pct": vola_lookup.get(asset, 0),
+                "sessionScore":   result.get("sessionScore", 0),
             })
             trades_geoeffnet += 1
             
@@ -474,6 +492,8 @@ async def config_speichern(req: ConfigRequest):
     if req.size     is not None: active_config["size"]      = req.size
     if req.conf     is not None: active_config["conf"]      = req.conf
     if req.mode     is not None: active_config["mode"]      = req.mode
+    if req.mm_modus is not None and req.mm_modus in MODI:
+        active_config["mm_modus"] = req.mm_modus
     log.info(f"Config gespeichert: {active_config}")
     if req.strategy and req.strategy != alte_strategie:
         send_whatsapp(
@@ -487,6 +507,11 @@ async def config_speichern(req: ConfigRequest):
 @app.get("/config/aktiv")
 async def config_aktiv():
     return active_config
+
+@app.get("/mm/modi")
+async def mm_modi():
+    """Liste aller Money-Management-Modi + aktuell gewählter."""
+    return {"modi": get_modi(), "aktiv": active_config["mm_modus"]}
 
 @app.post("/trade")
 async def place_trade(req: TradeRequest):
@@ -597,6 +622,7 @@ async def status():
         "assets":            active_config["assets"],
         "strategy":          active_config["strategy"],
         "auto_trade":        AUTO_TRADE,
+        "mm_modus":          active_config["mm_modus"],
         "min_confidence":    active_config["conf"],
         "active_config":     active_config,
         "next_scheduled":    job.next_run_time.isoformat() if job else None,
