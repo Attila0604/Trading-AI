@@ -7,6 +7,7 @@ Keine pandas-Dependency mehr - schnellerer Start, schlankerer Container.
 
 import os
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,19 @@ from openpyxl import load_workbook, Workbook
 from money_management import berechne_einsatz
 
 log = logging.getLogger(__name__)
+
+# ─── Datei-Sperre: verhindert parallele Schreib-/Lesezugriffe ───────────────
+# RLock = reentrant, damit z.B. signal_oeffnen intern get_statistik aufrufen darf.
+_excel_lock = threading.RLock()
+
+
+def _synchronized(fn):
+    """Serialisiert alle Excel-Zugriffe - kein gleichzeitiges Lesen/Schreiben."""
+    def wrapper(*args, **kwargs):
+        with _excel_lock:
+            return fn(*args, **kwargs)
+    wrapper.__name__ = fn.__name__
+    return wrapper
 
 # ─── Konfiguration ──────────────────────────────────────────
 DATA_DIR       = os.getenv("DATA_DIR", "/app/data")
@@ -163,6 +177,7 @@ def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
 
 # ─── Public API ─────────────────────────────────────────────
 
+@_synchronized
 def signal_oeffnen(signal: dict) -> dict:
     """Öffnet einen neuen Demo-Trade und speichert in Excel."""
     trades = _lade_trades()
@@ -240,6 +255,7 @@ def signal_oeffnen(signal: dict) -> dict:
     return neue_zeile
 
 
+@_synchronized
 def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float] = None) -> dict:
     """Schließt einen offenen Demo-Trade."""
     trades = _lade_trades()
@@ -287,12 +303,14 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float]
     return trades[idx]
 
 
+@_synchronized
 def get_offene_trades() -> list:
     """Gibt alle offenen Trades zurück."""
     trades = _lade_trades()
     return [t for t in trades if t.get("Status") == "offen"]
 
 
+@_synchronized
 def get_statistik() -> dict:
     """Liest Statistik direkt aus Excel."""
     trades = _lade_trades()
@@ -380,6 +398,7 @@ def get_statistik() -> dict:
     }
 
 
+@_synchronized
 def tages_snapshot():
     """Speichert täglichen Kapital-Snapshot."""
     stats = get_statistik()
@@ -387,6 +406,7 @@ def tages_snapshot():
     log.info(f"📊 Snapshot: {heute} | €{stats['aktuelles_kapital']:.2f}")
 
 
+@_synchronized
 def generiere_tages_report() -> str:
     """Generiert Tagesreport aus Excel-Daten."""
     stats = get_statistik()
