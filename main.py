@@ -15,7 +15,7 @@ from excel_tracker import ExcelTracker
 from whatsapp import send_whatsapp
 from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
-    get_offene_trades, get_statistik, generiere_tages_report
+    get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis
 )
 from money_management import get_modi, MODI
 
@@ -118,39 +118,39 @@ async def _check_trade_results(offene: list):
 
     for trade in offene:
         try:
-            # --- HIER WURDE DER CODE GEHÄRTET (Sicheres Asset) ---
-            asset       = trade.get("asset", "").strip()
+            # Excel-Spalten-Keys (nicht lowercase!) - das war der Bug
+            asset = str(trade.get("Asset", "")).strip()
             if not asset:
                 continue
-            epic        = asset_to_epic(asset)
-            # -----------------------------------------------------
-            
-            # --- HIER WURDE DER CODE GEHÄRTET (Sichere ID) ---
-            trade_id    = trade.get("id", trade.get("trade_id", "Unbekannt"))
-            # -------------------------------------------------
-            
-            entry_price = float(trade.get("entry_price", 0))
-            action      = trade.get("action", "buy")
-            sl_pct      = float(trade.get("sl_pct", STOP_LOSS_PCT))
-            tp_pct      = float(trade.get("tp_pct", TAKE_PROFIT_PCT))
+            epic     = asset_to_epic(asset)
+            trade_id = trade.get("ID", "Unbekannt")
+
+            entry_price = float(trade.get("Entry-Price", 0) or 0)
+            action      = str(trade.get("Action", "buy")).lower()
+            sl_pct      = float(trade.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT)
+            tp_pct      = float(trade.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT)
+            einsatz     = float(trade.get("Einsatz", 0) or 0)
 
             price_data    = await capital.get_prices(epic)
             current_price = price_data.get("bid") or price_data.get("ask")
-
             if not current_price:
                 log.warning(f"Kein Preis für {asset}")
                 continue
-
             current_price = float(current_price)
-            geoeffnet     = datetime.fromisoformat(trade["geoeffnet_am"])
-            alter_std     = (datetime.now() - geoeffnet).total_seconds() / 3600
+
+            try:
+                geoeffnet = datetime.fromisoformat(str(trade.get("Geöffnet am", "")))
+                alter_std = (datetime.now() - geoeffnet).total_seconds() / 3600
+            except Exception:
+                alter_std = 0.0
 
             log.info(f"🔍 {trade_id} | {asset} | Entry: {entry_price} | Aktuell: {current_price} | {alter_std:.1f}h")
 
-            ergebnis = None
+            ergebnis     = None
+            pnl_override = None
 
             if entry_price > 0:
-                if action == "buy":
+                if action in ("buy", "long"):
                     tp_level = entry_price * (1 + tp_pct / 100)
                     sl_level = entry_price * (1 - sl_pct / 100)
                     if current_price >= tp_level:
@@ -169,18 +169,16 @@ async def _check_trade_results(offene: list):
                         ergebnis = "verloren"
                         log.info(f"❌ SL SELL! {asset} | {entry_price:.5f} → {current_price:.5f}")
 
+            # Timeout: nach 48h zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
             if ergebnis is None and alter_std > 48:
-                ergebnis = "verloren"
-                log.info(f"⏰ Trade {trade_id} nach 48h geschlossen")
+                pnl_override = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
+                ergebnis = "gewonnen" if pnl_override > 0 else "verloren"
+                log.info(f"⏰ Trade {trade_id} nach 48h zum Marktpreis geschlossen | P&L €{pnl_override:.2f}")
 
             if ergebnis:
-                geschlossen = trade_schliessen(trade_id, ergebnis)
+                geschlossen = trade_schliessen(trade_id, ergebnis, pnl_override)
                 stats       = get_statistik()
-                tracker.save_trade({
-                    **trade,
-                    "ergebnis":       ergebnis,
-                    "kapital_danach": stats["aktuelles_kapital"],
-                })
+                pnl_wert    = float(geschlossen.get("P&L", 0) or 0)
                 emoji = "✅" if ergebnis == "gewonnen" else "❌"
                 send_whatsapp(
                     f"{emoji} *Demo-Trade {ergebnis.upper()}*\n"
@@ -188,14 +186,14 @@ async def _check_trade_results(offene: list):
                     f"📊 {asset} | {action.upper()}\n"
                     f"📈 Entry: {entry_price:.5f}\n"
                     f"📉 Aktuell: {current_price:.5f}\n"
-                    f"💰 P&L: {'+' if geschlossen.get('pnl',0)>=0 else ''}€{geschlossen.get('pnl',0):.2f}\n"
+                    f"💰 P&L: {'+' if pnl_wert >= 0 else ''}€{pnl_wert:.2f}\n"
                     f"💼 Kapital: €{stats['aktuelles_kapital']:.2f}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"🌐 {DASHBOARD_URL}"
                 )
 
         except Exception as e:
-            log.error(f"Ergebnis-Check Fehler [{trade.get('id', 'Unbekannt')}]: {e}")
+            log.error(f"Ergebnis-Check Fehler [{trade.get('ID', 'Unbekannt')}]: {e}")
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -316,7 +314,16 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 vola_lookup[asset_name] = width
         # ───────────────────────────────────────────────────────────────────────
 
+        # ── Risk Guardian: greift jetzt wirklich (vorher nur kosmetisch) ──────
+        risk_report = result.get("agentReports", {}).get("risk", {})
+        risk_ok     = risk_report.get("approved", True)
+        if not risk_ok:
+            log.warning(f"🛡️ Risk Guardian NICHT freigegeben ({risk_report.get('message','')}) → keine Trades")
+        # ───────────────────────────────────────────────────────────────────────
+
         for signal in all_signals:
+            if not risk_ok:
+                continue
             if signal.get("confidence", 0) < active_config["conf"]:
                 continue
 
@@ -400,6 +407,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         if not all_signals:
             msg += "⏸ Keine Signale - Markt beobachten.\n"
+
+        if not risk_ok:
+            msg += f"🛡️ _Risk Guardian: Setup nicht freigegeben – keine Trades eröffnet._\n"
 
         msg += (
             f"━━━━━━━━━━━━━━━━━━━━\n"
