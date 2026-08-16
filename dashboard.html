@@ -499,6 +499,7 @@ function showTab(name,btn){
   document.querySelectorAll(".tab-btn").forEach(b=>b.classList.remove("active"));
   if(btn)btn.classList.add("active");
   if(name==="demo")ladeDemo();
+  if(name==="signale")ladeSignale();
   if(name==="portfolio")ladePortfolio();
   if(name==="einstellungen")ladeSettings();
   if(name==="config"){ladeAktiveConfig();renderAssets();renderStrats();renderSliders();renderModes();renderMM();updateConfigPreview();}
@@ -884,6 +885,18 @@ async function startPipeline(){
   },16000);
 }
 
+async function ladeSignale(){
+  const sig=await api("/signals");
+  if(sig&&sig.signals&&sig.signals.length>0){
+    signals=sig.signals.map(s=>({...s,status:s.status||"pending"}));
+    renderSignals();
+    if(sig.sessionScore!==undefined)
+      logMsg("🎯",`${signals.length} Signal(e) vom Server geladen | Score: ${sig.sessionScore}/100`,"log-trade");
+  }else{
+    renderSignals();
+  }
+}
+
 function renderSignals(){
   const wrap=document.getElementById("signals-wrap");
   document.getElementById("sig-count").textContent=signals.length+" Signale";
@@ -1007,6 +1020,7 @@ async function pollStatus(){
 document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("init-t").textContent=nowT();
   ladeDemo();
+  ladeSignale();
   pollStatus();
   setInterval(pollStatus,15000);
   setInterval(()=>{
