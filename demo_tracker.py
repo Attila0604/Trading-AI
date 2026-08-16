@@ -13,12 +13,16 @@ from typing import Optional
 
 from openpyxl import load_workbook, Workbook
 
+from money_management import berechne_einsatz
+
 log = logging.getLogger(__name__)
 
 # ─── Konfiguration ──────────────────────────────────────────
 DATA_DIR       = os.getenv("DATA_DIR", "/app/data")
 STARTKAPITAL   = float(os.getenv("DEMO_STARTKAPITAL", "1000"))
 RISIKO_PROZENT = float(os.getenv("MAX_RISK_PCT", "5"))
+# Money-Management-Modus (Fallback, wenn kein Modus im Signal mitgegeben wird)
+MM_MODUS       = os.getenv("MM_MODUS", "fixed_percent")
 SL_PROZENT     = float(os.getenv("STOP_LOSS_PCT", "1.0"))
 TP_PROZENT     = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
 EXCEL_FILE     = Path(DATA_DIR) / "Trading_Tracker.xlsx"
@@ -30,6 +34,7 @@ COLUMNS = [
     "Konfidenz", "Einsatz", "SL %", "TP %", "SL Absolut", "TP Absolut",
     "R:R", "Entry-Price", "Aktuell", "P&L", "Status",
     "Geöffnet am", "Geschlossen am", "Zusammenfassung", "Score", "Strategie",
+    "MM-Modus", "MM-Begründung",
 ]
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -145,11 +150,30 @@ def signal_oeffnen(signal: dict) -> dict:
 
     stats = get_statistik()
     kapital = stats["aktuelles_kapital"]
-    einsatz = round(kapital * RISIKO_PROZENT / 100, 2)
-    einsatz = max(1.0, min(einsatz, kapital))
 
     sl_pct = _validiere_prozent(signal.get("stopLoss"), SL_PROZENT)
     tp_pct = _validiere_prozent(signal.get("takeProfit"), TP_PROZENT)
+
+    # ── Money-Management: Einsatz aus gewähltem Modus ────────────────
+    modus = signal.get("mm_modus", MM_MODUS)
+    mm = berechne_einsatz(
+        modus=modus,
+        kapital=kapital,
+        ctx={
+            "confidence":           signal.get("confidence", 0),
+            "win_rate":             stats["statistik"]["win_rate"],
+            "gesamt_abgeschlossen": stats["statistik"]["gewonnen"] + stats["statistik"]["verloren"],
+            "sl_pct":               sl_pct,
+            "tp_pct":               tp_pct,
+            "volatility_pct":       signal.get("volatility_pct", 0),
+            "letzte_trades":        stats.get("letzte_trades", []),
+        },
+        params=signal.get("mm_params"),
+    )
+    einsatz          = mm["einsatz"]
+    mm_modus_genutzt = mm["modus"]
+    mm_begruendung   = mm["begruendung"]
+    # ─────────────────────────────────────────────────────────────────
 
     sl_absolut = round(einsatz * sl_pct / 100, 2)
     tp_absolut = round(einsatz * tp_pct / 100, 2)
@@ -179,6 +203,8 @@ def signal_oeffnen(signal: dict) -> dict:
         "Zusammenfassung": signal.get("summary", ""),
         "Score": signal.get("sessionScore", 0),
         "Strategie": signal.get("strategyUsed", ""),
+        "MM-Modus": mm_modus_genutzt,
+        "MM-Begründung": mm_begruendung,
     }
 
     trades.append(neue_zeile)
@@ -186,7 +212,7 @@ def signal_oeffnen(signal: dict) -> dict:
 
     log.info(
         f"✅ Demo-Trade: {trade_id} | {neue_zeile['Asset']} {neue_zeile['Action']} | "
-        f"€{einsatz} | SL:{sl_pct}% TP:{tp_pct}% | Entry:{neue_zeile['Entry-Price']}"
+        f"€{einsatz} ({mm_modus_genutzt}) | SL:{sl_pct}% TP:{tp_pct}% | Entry:{neue_zeile['Entry-Price']}"
     )
 
     return neue_zeile
