@@ -142,6 +142,25 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
+                  action: str, sl_pct: float, tp_pct: float) -> float:
+    """
+    Realer P&L beim Schließen zu einem beliebigen Preis (risikobasiert).
+    Einsatz = Verlust bei SL. Die Preisbewegung wird in R-Vielfachen gemessen:
+    volle SL-Distanz gegen dich = -Einsatz, volle TP-Distanz = +Einsatz × R:R.
+    Gedeckelt zwischen -Einsatz und +Einsatz × R:R.
+    """
+    if entry <= 0 or sl_pct <= 0:
+        return 0.0
+    move_pct = (exit_price - entry) / entry * 100
+    if str(action).lower() in ("sell", "short"):
+        move_pct = -move_pct
+    r = move_pct / sl_pct
+    pnl = einsatz * r
+    max_gewinn = einsatz * (tp_pct / sl_pct) if sl_pct > 0 else einsatz
+    return round(max(-einsatz, min(pnl, max_gewinn)), 2)
+
+
 # ─── Public API ─────────────────────────────────────────────
 
 def signal_oeffnen(signal: dict) -> dict:
@@ -175,8 +194,11 @@ def signal_oeffnen(signal: dict) -> dict:
     mm_begruendung   = mm["begruendung"]
     # ─────────────────────────────────────────────────────────────────
 
-    sl_absolut = round(einsatz * sl_pct / 100, 2)
-    tp_absolut = round(einsatz * tp_pct / 100, 2)
+    # Risikobasiert: Einsatz = maximaler Verlust, wenn SL trifft.
+    # SL Absolut = voller Einsatz (Verlust), TP Absolut = Einsatz × R:R (Zielgewinn).
+    rr         = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
+    sl_absolut = round(einsatz, 2)
+    tp_absolut = round(einsatz * rr, 2)
 
     trade_id = f"T{len(trades) + 1:04d}"
 
