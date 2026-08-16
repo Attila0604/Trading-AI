@@ -276,6 +276,10 @@ button:hover{filter:brightness(1.15)}
         <div id="strat-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:7px"></div>
       </div>
       <div class="card">
+        <div class="card-title">MONEY-MANAGEMENT</div>
+        <div id="mm-grid" style="display:flex;flex-direction:column;gap:7px"></div>
+      </div>
+      <div class="card">
         <div class="card-title">TRADING-MODUS</div>
         <div id="mode-btns" style="display:flex;flex-direction:column;gap:7px"></div>
       </div>
@@ -348,7 +352,7 @@ button:hover{filter:brightness(1.15)}
 <script>
 // ═══ STATE ════════════════════════════════════════════════════════════
 let signals=[], demoData={}, pipelineRunning=false;
-let cfg={assets:["EUR/USD","BTC/USD","XAU/USD","US500"],strategy:"adaptive",risk:2,sl:1.5,tp:3,size:1000,conf:70,mode:"semi"};
+let cfg={assets:["EUR/USD","BTC/USD","XAU/USD","US500"],strategy:"adaptive",risk:2,sl:1.5,tp:3,size:1000,conf:70,mode:"semi",mm_modus:"fixed_percent"};
 const STRATS=[
   {id:"trend",name:"Trend Following",tf:"4H-1D"},{id:"reversion",name:"Mean Reversion",tf:"1H-4H"},
   {id:"breakout",name:"Breakout Hunter",tf:"1H-4H"},{id:"news",name:"News Catalyst",tf:"5M-1H"},
@@ -497,7 +501,7 @@ function showTab(name,btn){
   if(name==="demo")ladeDemo();
   if(name==="portfolio")ladePortfolio();
   if(name==="einstellungen")ladeSettings();
-  if(name==="config"){ladeAktiveConfig();renderAssets();renderStrats();renderSliders();renderModes();updateConfigPreview();}
+  if(name==="config"){ladeAktiveConfig();renderAssets();renderStrats();renderSliders();renderModes();renderMM();updateConfigPreview();}
 }
 
 // ═══ DEMO KAPITAL ═════════════════════════════════════════════════════
@@ -704,7 +708,8 @@ async function ladeAktiveConfig(){
   cfg.size     = data.size     || cfg.size;
   cfg.conf     = data.conf     || cfg.conf;
   cfg.mode     = data.mode     || cfg.mode;
-  renderAssets();renderStrats();renderSliders();renderModes();updateConfigPreview();
+  cfg.mm_modus = data.mm_modus || cfg.mm_modus;
+  renderAssets();renderStrats();renderSliders();renderModes();renderMM();updateConfigPreview();
 }
 
 function updateConfigPreview(){
@@ -718,6 +723,7 @@ function updateConfigPreview(){
       <span style="color:var(--muted)">SL/TP:</span><span style="color:var(--text)">${cfg.sl}% / ${cfg.tp}%</span>
       <span style="color:var(--muted)">Konfidenz:</span><span style="color:var(--green)">${cfg.conf}%</span>
       <span style="color:var(--muted)">Modus:</span><span style="color:var(--text)">${cfg.mode}</span>
+      <span style="color:var(--muted)">Money-Mgmt:</span><span style="color:var(--gold)">${(MM_MODI.find(m=>m.id===cfg.mm_modus)||{}).name||cfg.mm_modus}</span>
     </div>`;
 }
 
@@ -725,7 +731,7 @@ async function configSpeichern(){
   const r=await api("/config/speichern","POST",{
     assets:cfg.assets,strategy:cfg.strategy,
     risk_pct:cfg.risk,sl_pct:cfg.sl,tp_pct:cfg.tp,
-    size:cfg.size,conf:cfg.conf,mode:cfg.mode,
+    size:cfg.size,conf:cfg.conf,mode:cfg.mode,mm_modus:cfg.mm_modus,
   });
   if(r&&r.status==="gespeichert"){
     toast("✅ Konfiguration gespeichert!","ok");
@@ -780,6 +786,27 @@ function renderSliders(){
         style="width:100%;-webkit-appearance:none;height:3px;background:#1c1c30;border-radius:2px;outline:none;cursor:pointer;accent-color:var(--gold)"
         oninput="cfg['${s.key}']=parseFloat(this.value);document.getElementById('v-${s.key}').textContent='${s.unit==="€"?"€":""}'+parseFloat(this.value).toFixed(1).replace('.0','')+'${s.unit!=="€"?s.unit:""}';updateConfigPreview()">
     </div>`).join("");
+}
+
+// ═══ MONEY-MANAGEMENT AUSWAHL ═════════════════════════════════════════
+const MM_MODI=[
+  {id:"fixed_percent",   name:"Fixer Prozentsatz",     d:"Immer X% des Kapitals pro Trade",              risiko:"MITTEL",  c:"#22d3ee"},
+  {id:"fixed_amount",    name:"Fixer Betrag",           d:"Immer derselbe Euro-Betrag",                   risiko:"NIEDRIG", c:"#10b981"},
+  {id:"confidence_scaled",name:"Confidence-skaliert",   d:"Einsatz wächst mit der Signal-Konfidenz",       risiko:"MITTEL",  c:"#22d3ee"},
+  {id:"kelly",           name:"Half-Kelly",             d:"Optimale Größe aus Win-Rate & R:R (braucht Historie)",risiko:"VARIABEL",c:"#f5c518"},
+  {id:"volatility",      name:"Volatilitäts-invers",    d:"Kleiner bei hoher Vola, größer bei ruhigem Markt",risiko:"MITTEL", c:"#22d3ee"},
+  {id:"anti_martingale", name:"Anti-Martingale",        d:"Nach Gewinnen hoch, nach Verlusten runter",     risiko:"HOCH",    c:"#ef4444"},
+];
+function renderMM(){
+  const wrap=document.getElementById("mm-grid");if(!wrap)return;wrap.innerHTML="";
+  MM_MODI.forEach(m=>{
+    const sel=cfg.mm_modus===m.id;
+    const div=document.createElement("div");
+    div.style.cssText=`background:${sel?m.c+"15":"var(--s)"};border:1px solid ${sel?m.c+"66":"var(--b)"};border-radius:6px;padding:9px 11px;cursor:pointer;transition:all .2s`;
+    div.onclick=()=>{cfg.mm_modus=m.id;renderMM();updateConfigPreview();};
+    div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center"><span style="color:${sel?m.c:"var(--text)"};font-size:12px;font-weight:600">${m.name}${sel?" ◆":""}</span><span style="color:${m.c};font-size:8px;border:1px solid ${m.c}44;border-radius:3px;padding:1px 5px">${m.risiko}</span></div><div style="color:var(--muted);font-size:10px;margin-top:2px">${m.d}</div>`;
+    wrap.appendChild(div);
+  });
 }
 
 function renderModes(){
