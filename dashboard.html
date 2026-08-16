@@ -269,6 +269,17 @@ button:hover{filter:brightness(1.15)}
         <div class="card-title">RISIKO-MANAGEMENT</div>
         <div id="slider-wrap"></div>
       </div>
+      <div class="card" style="background:#a855f708;border-color:#a855f733">
+        <div class="card-title">🔬 BACKTEST — welcher Modus ist der beste?</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.6;margin-bottom:8px">
+          Testet alle 6 Money-Management-Modi über echte historische Kerzen und vergleicht ROI, Drawdown &amp; Profit-Faktor. Dauert ~10 Sekunden.
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <select id="bt-asset" style="flex:1;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:6px 9px;color:var(--text);font-size:11px;font-family:var(--font);outline:none"></select>
+          <button id="bt-btn" onclick="backtestStarten()" style="background:#a855f722;color:#a855f7;border:1px solid #a855f755;border-radius:4px;padding:5px 16px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">▶ Backtest starten</button>
+        </div>
+        <div id="bt-result"></div>
+      </div>
     </div>
     <div>
       <div class="card">
@@ -502,7 +513,7 @@ function showTab(name,btn){
   if(name==="signale")ladeSignale();
   if(name==="portfolio")ladePortfolio();
   if(name==="einstellungen")ladeSettings();
-  if(name==="config"){ladeAktiveConfig();renderAssets();renderStrats();renderSliders();renderModes();renderMM();updateConfigPreview();}
+  if(name==="config"){ladeAktiveConfig();renderAssets();renderStrats();renderSliders();renderModes();renderMM();renderBacktestAssets();updateConfigPreview();}
 }
 
 // ═══ DEMO KAPITAL ═════════════════════════════════════════════════════
@@ -751,6 +762,7 @@ function renderAssets(){
   });
   const cnt=document.getElementById("aktive-assets-count");
   if(cnt)cnt.textContent=cfg.assets.length+" Assets";
+  renderBacktestAssets();
   updateConfigPreview();
 }
 function addAsset(){const inp=document.getElementById("asset-inp");const v=inp.value.trim().toUpperCase();if(v&&!cfg.assets.includes(v)){cfg.assets.push(v);inp.value="";renderAssets();}}
@@ -798,6 +810,43 @@ const MM_MODI=[
   {id:"volatility",      name:"Volatilitäts-invers",    d:"Kleiner bei hoher Vola, größer bei ruhigem Markt",risiko:"MITTEL", c:"#22d3ee"},
   {id:"anti_martingale", name:"Anti-Martingale",        d:"Nach Gewinnen hoch, nach Verlusten runter",     risiko:"HOCH",    c:"#ef4444"},
 ];
+// ═══ BACKTEST ═════════════════════════════════════════════════════════
+function renderBacktestAssets(){
+  const sel=document.getElementById("bt-asset");if(!sel)return;
+  const prev=sel.value;
+  sel.innerHTML=cfg.assets.map(a=>`<option value="${a}">${a}</option>`).join("");
+  if(prev&&cfg.assets.includes(prev))sel.value=prev;
+}
+async function backtestStarten(){
+  const asset=document.getElementById("bt-asset").value||cfg.assets[0];
+  const box=document.getElementById("bt-result");
+  const btn=document.getElementById("bt-btn");
+  btn.disabled=true;btn.textContent="⏳ läuft…";
+  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Backtest läuft für <b>${asset}</b> — Kerzen werden geladen…</div>`;
+  const r=await api("/backtest","POST",{asset:asset,resolution:"HOUR_4",count:500});
+  btn.disabled=false;btn.textContent="▶ Backtest starten";
+  if(!r||r.error||!r.ergebnisse||!r.ergebnisse.length){
+    box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Backtest fehlgeschlagen — genug Kerzen vorhanden?"}</div>`;
+    return;
+  }
+  let html=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">📊 ${r.kerzen} Kerzen | ${r.signal_trades} Trades | Win-Rate ${r.ergebnisse[0].win_rate}% | SL ${r.parameter.sl_pct}% / TP ${r.parameter.tp_pct}%</div>`;
+  html+=`<table style="width:100%;font-size:10px;border-collapse:collapse">
+    <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">MODUS</td><td style="text-align:right">ROI</td><td style="text-align:right">MAX-DD</td><td style="text-align:right">PF</td></tr>`;
+  r.ergebnisse.forEach((x,i)=>{
+    const col=x.roi_pct>=0?"var(--green)":"var(--red)";
+    const name=i===0?"🏆 "+x.mm_name:x.mm_name;
+    html+=`<tr style="border-top:1px solid var(--b)">
+      <td style="padding:5px 0;color:${i===0?'var(--gold)':'var(--text)'};font-weight:${i===0?'700':'400'}">${name}</td>
+      <td style="text-align:right;color:${col};font-weight:600">${x.roi_pct>=0?'+':''}${x.roi_pct}%</td>
+      <td style="text-align:right;color:var(--muted)">${x.max_drawdown_pct}%</td>
+      <td style="text-align:right;color:var(--text)">${x.profit_factor}</td>
+    </tr>`;
+  });
+  html+=`</table>
+    <div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 Nicht nur ROI zählt — ein hoher Drawdown (MAX-DD) ist schwer durchzuhalten. Profit-Faktor (PF) über 1 = profitabel.</div>`;
+  box.innerHTML=html;
+}
+
 function renderMM(){
   const wrap=document.getElementById("mm-grid");if(!wrap)return;wrap.innerHTML="";
   MM_MODI.forEach(m=>{
