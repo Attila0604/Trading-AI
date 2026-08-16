@@ -18,6 +18,7 @@ from demo_tracker import (
     get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis
 )
 from money_management import get_modi, MODI
+from backtest import vergleiche_modi
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -296,6 +297,16 @@ class AnalyzeRequest(BaseModel):
     auto_execute: bool = AUTO_TRADE
 
 
+class BacktestRequest(BaseModel):
+    asset: str = None
+    resolution: str = "HOUR_4"
+    count: int = 500
+    sl_pct: float = None
+    tp_pct: float = None
+    min_confluence: int = 6
+    startkapital: float = 1000.0
+
+
 class ConfigRequest(BaseModel):
     assets: list[str] = None
     strategy: str = None
@@ -561,6 +572,50 @@ async def config_aktiv():
 async def mm_modi():
     """Liste aller Money-Management-Modi + aktuell gewählter."""
     return {"modi": get_modi(), "aktiv": active_config["mm_modus"]}
+
+@app.post("/backtest")
+async def backtest_starten(req: BacktestRequest = None):
+    """
+    Regelbasierter Backtest über historische Kerzen. Vergleicht alle 6
+    Money-Management-Modi über dieselbe Trade-Sequenz (RSI/MACD/EMA/BB, ohne LLM).
+    Baseline: schlägt das Live-System diese Regel-Logik nicht, bringt die KI nichts.
+    """
+    if req is None:
+        req = BacktestRequest()
+
+    asset = req.asset or (active_config["assets"][0] if active_config["assets"] else "BTC/USD")
+    sl    = req.sl_pct if req.sl_pct is not None else active_config["sl_pct"]
+    tp    = req.tp_pct if req.tp_pct is not None else active_config["tp_pct"]
+
+    if not capital.is_connected():
+        await capital.connect()
+
+    epic    = asset_to_epic(asset)
+    candles = await capital.get_historical_prices(epic, req.resolution, req.count)
+    if not candles or len(candles) < 60:
+        raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
+
+    res = vergleiche_modi(candles, startkapital=req.startkapital, sl_pct=sl, tp_pct=tp,
+                          min_confluence=req.min_confluence)
+    res["asset"]      = asset
+    res["resolution"] = req.resolution
+
+    if res.get("ergebnisse"):
+        top = res["ergebnisse"][:3]
+        msg = (
+            f"🔬 *BACKTEST {asset}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 {res['kerzen']} Kerzen ({req.resolution}) | {res['signal_trades']} Trades\n"
+            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | SL {sl}% / TP {tp}%\n"
+            f"━━━ Top Money-Management ━━━\n"
+        )
+        for i, r in enumerate(top, 1):
+            msg += (f"{i}. *{r['mm_name']}*: {'+' if r['roi_pct'] >= 0 else ''}{r['roi_pct']:.1f}% ROI "
+                    f"| DD {r['max_drawdown_pct']:.1f}% | PF {r['profit_factor']}\n")
+        msg += f"━━━━━━━━━━━━━━━━━━━━\n🌐 {DASHBOARD_URL}"
+        send_whatsapp(msg)
+
+    return res
 
 @app.post("/trade")
 async def place_trade(req: TradeRequest):
