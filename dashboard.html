@@ -386,8 +386,28 @@ function setAgent(id,state){
   el.className="agent-pill"+(state==="active"?" active":state==="done"?" done":"");
   el.textContent=(state==="active"?"● ":state==="done"?"✓ ":"○ ")+el.textContent.replace(/^[●✓○] /,"");
 }
-async function api(path,method="GET",body=null){
-  try{const opts={method,headers:{"Content-Type":"application/json"}};if(body)opts.body=JSON.stringify(body);const r=await fetch(path,opts);return await r.json();}
+// ═══ API + TOKEN ══════════════════════════════════════════════════════
+function getToken(){try{return localStorage.getItem("tai_token")||"";}catch(e){return "";}}
+function setToken(t){try{localStorage.setItem("tai_token",t);}catch(e){}}
+function tokenAbfragen(){
+  const t=prompt("🔒 API-Token eingeben\n(derselbe Wert wie die Variable API_TOKEN in Railway)");
+  if(t){setToken(t.trim());return true;}
+  return false;
+}
+async function api(path,method="GET",body=null,retry=true){
+  try{
+    const opts={method,headers:{"Content-Type":"application/json"}};
+    const tok=getToken();
+    if(tok)opts.headers["X-API-Token"]=tok;
+    if(body)opts.body=JSON.stringify(body);
+    const r=await fetch(path,opts);
+    if(r.status===401){
+      if(retry&&tokenAbfragen())return await api(path,method,body,false);
+      toast("🔒 Nicht autorisiert - Token fehlt oder falsch","err");
+      return null;
+    }
+    return await r.json();
+  }
   catch(e){console.warn("API:",e);return null;}
 }
 
