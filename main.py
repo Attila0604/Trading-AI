@@ -19,6 +19,7 @@ from demo_tracker import (
 )
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi
+from indicators import calculate_all_indicators
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
@@ -625,6 +626,111 @@ async def config_aktiv():
 async def mm_modi():
     """Liste aller Money-Management-Modi + aktuell gewählter."""
     return {"modi": get_modi(), "aktiv": active_config["mm_modus"]}
+
+@app.get("/selftest")
+async def selftest():
+    """
+    Systemcheck: prüft nach einem Deploy, ob alles gesund ist.
+    Rein lesend, gibt KEINE Secrets aus - nur ob sie gesetzt sind.
+    """
+    checks = []
+
+    def add(name, ok, info, warn=False):
+        checks.append({"name": name, "status": "warn" if (warn and not ok) else ("ok" if ok else "fehler"), "info": info})
+
+    # 1. Zugangsdaten gesetzt?
+    add("Anthropic API-Key", bool(os.getenv("ANTHROPIC_API_KEY")),
+        "gesetzt" if os.getenv("ANTHROPIC_API_KEY") else "FEHLT - Analysen funktionieren nicht")
+    add("Capital.com Zugangsdaten", bool(os.getenv("CAPITAL_API_KEY")),
+        "gesetzt" if os.getenv("CAPITAL_API_KEY") else "FEHLT")
+
+    # 2. Demo oder Live?
+    ist_demo = "demo" in capital.base
+    add("Konto-Modus", ist_demo,
+        "DEMO (Spielgeld)" if ist_demo else "⚠️ LIVE - echtes Geld! CAPITAL_DEMO=true setzen",
+        warn=True)
+
+    # 3. Verbindung
+    try:
+        if not capital.is_connected():
+            await capital.connect()
+        verbunden = capital.is_connected()
+    except Exception as e:
+        verbunden = False
+        log.warning(f"Selftest Verbindung: {e}")
+    add("Capital.com Verbindung", verbunden, "verbunden" if verbunden else "NICHT verbunden")
+
+    # 4. Datenspeicher persistent?
+    tracker_datei = os.path.join(DATA_DIR, "Trading_Tracker.xlsx")
+    daten_da = os.path.exists(tracker_datei)
+    add("Datenspeicher", daten_da,
+        f"{DATA_DIR} (Datei vorhanden)" if daten_da else f"{DATA_DIR} - noch keine Datei")
+
+    schreibbar = False
+    try:
+        testpfad = os.path.join(DATA_DIR, ".schreibtest")
+        with open(testpfad, "w") as f:
+            f.write("x")
+        os.remove(testpfad)
+        schreibbar = True
+    except Exception as e:
+        log.warning(f"Selftest Schreibtest: {e}")
+    add("Schreibrechte", schreibbar, "OK" if schreibbar else "KEIN Schreibzugriff - Volume prüfen!")
+
+    # 5. Config-Persistenz aktiv?
+    cfg_da = os.path.exists(CONFIG_FILE)
+    add("Config-Persistenz", cfg_da,
+        "config.json vorhanden - Einstellungen überleben Neustart" if cfg_da
+        else "noch nicht gespeichert - einmal Config speichern", warn=True)
+
+    # 6. Schreibschutz
+    add("Schreibschutz (API_TOKEN)", bool(API_TOKEN),
+        "aktiv" if API_TOKEN else "AUS - Endpoints offen für jeden mit der URL", warn=True)
+
+    # 7. Trade-Auswertung: läuft der Ergebnis-Check?
+    try:
+        offene = get_offene_trades()
+        stats  = get_statistik()
+        abgeschlossen = stats["statistik"]["gewonnen"] + stats["statistik"]["verloren"]
+        alte = 0
+        for t in offene:
+            try:
+                geo = datetime.fromisoformat(str(t.get("Geöffnet am", "")))
+                if (datetime.now() - geo).total_seconds() / 3600 > 52:
+                    alte += 1
+            except Exception:
+                pass
+        add("Trade-Auswertung", alte == 0,
+            f"{len(offene)} offen, {abgeschlossen} abgeschlossen" +
+            (f" - ⚠️ {alte} Trades älter als 52h werden nicht geschlossen!" if alte else ""),
+            warn=True)
+        add("Demo-Kapital", True, f"€{stats['aktuelles_kapital']:.2f} | Win-Rate {stats['statistik']['win_rate']}%")
+    except Exception as e:
+        add("Trade-Auswertung", False, f"Fehler: {e}")
+
+    # 8. Indikatoren + Kerzen
+    try:
+        epic = asset_to_epic(active_config["assets"][0])
+        kerzen = await capital.get_historical_prices(epic, "HOUR_4", 60)
+        ind = calculate_all_indicators(kerzen) if kerzen else {"error": "keine Kerzen"}
+        ok = bool(kerzen) and "error" not in ind
+        add("Marktdaten & Indikatoren", ok,
+            f"{len(kerzen)} Kerzen, Signal: {ind.get('signal', '-')}" if ok else "keine Daten")
+    except Exception as e:
+        add("Marktdaten & Indikatoren", False, f"Fehler: {e}")
+
+    # 9. Zeitpläne
+    jobs = scheduler.get_jobs()
+    add("Zeitpläne", len(jobs) >= 3, f"{len(jobs)} Jobs aktiv")
+
+    fehler   = sum(1 for c in checks if c["status"] == "fehler")
+    warnungen = sum(1 for c in checks if c["status"] == "warn")
+    return {
+        "gesamt": "fehler" if fehler else ("warnung" if warnungen else "ok"),
+        "fehler": fehler, "warnungen": warnungen, "geprueft": len(checks),
+        "checks": checks,
+        "zeit": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+    }
 
 @app.post("/backtest")
 async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
