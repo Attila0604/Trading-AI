@@ -651,6 +651,10 @@ async def selftest():
         warn=True)
 
     # 3. Verbindung
+    orders_frei = os.getenv("ORDERS_ENABLED", "false").strip().lower() == "true"
+    add("Order-Sperre", not orders_frei,
+        "🔒 Orders gesperrt - es kann KEINE echte Order rausgehen" if not orders_frei
+        else "⚠️ OFFEN - echte Orders sind möglich!", warn=True)
     try:
         if not capital.is_connected():
             await capital.connect()
