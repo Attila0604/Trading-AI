@@ -227,6 +227,15 @@ class CapitalClient:
 
     async def create_position(self, epic: str, direction: str, size: float,
                                stop_loss_pct: float = 1.5, take_profit_pct: float = 3.0) -> dict:
+        # ── HARTE ORDER-SPERRE ────────────────────────────────────────────
+        # Echte Orders gehen NUR raus, wenn ORDERS_ENABLED ausdrücklich
+        # auf "true" steht. Default = gesperrt. Schützt das Live-Konto,
+        # während die Marktdaten weiter normal genutzt werden.
+        if os.getenv("ORDERS_ENABLED", "false").strip().lower() != "true":
+            log.warning(f"🔒 Order BLOCKIERT (ORDERS_ENABLED nicht aktiv): {epic} {direction} {size}")
+            return {"status": "blocked",
+                    "error": "Orders sind gesperrt (ORDERS_ENABLED=false). Demo-Simulation läuft weiter."}
+        # ──────────────────────────────────────────────────────────────────
         try:
             price_data    = await self.get_prices(epic)
             current_price = price_data.get("ask") if direction == "BUY" else price_data.get("bid")
@@ -263,6 +272,10 @@ class CapitalClient:
             return {"error": str(e)}
 
     async def close_position(self, deal_id: str) -> dict:
+        if os.getenv("ORDERS_ENABLED", "false").strip().lower() != "true":
+            log.warning(f"🔒 Schließen BLOCKIERT (ORDERS_ENABLED nicht aktiv): {deal_id}")
+            return {"status": "blocked",
+                    "error": "Orders sind gesperrt (ORDERS_ENABLED=false)."}
         try:
             data = await self._delete(f"/positions/{deal_id}")
             log.info(f"✅ Position geschlossen: {deal_id}")
