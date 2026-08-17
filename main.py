@@ -1,12 +1,12 @@
 # Trading Multi-Agent v3.0 - Update 11.04.2026
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from contextlib import asynccontextmanager
-import asyncio, os, logging
+import asyncio, os, json, logging
 from datetime import datetime
 
 from agents import run_pipeline
@@ -37,6 +37,8 @@ AUTO_TRADE      = os.getenv("AUTO_TRADE", "false").lower() == "true"
 DATA_DIR        = os.getenv("DATA_DIR", "/app/data")
 MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
 MM_MODUS        = os.getenv("MM_MODUS", "fixed_percent")
+# Schreibschutz: nur aktiv, wenn API_TOKEN gesetzt ist (sonst offen wie bisher)
+API_TOKEN       = os.getenv("API_TOKEN", "").strip()
 DASHBOARD_URL   = os.getenv("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
 
 # Assets die am Wochenende handelbar sind
@@ -63,6 +65,56 @@ active_config = {
     "mode":     "semi",
     "mm_modus": MM_MODUS,
 }
+
+# ─── Config-Persistenz ───────────────────────────────────────────────────────
+# Ohne das fällt die Config bei JEDEM Neustart auf die Code-Defaults zurück.
+# Liegt im DATA_DIR (Railway-Volume), überlebt also Deployments.
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+
+
+def config_laden():
+    """Gespeicherte Config beim Start einlesen (nur bekannte Keys übernehmen)."""
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                gespeichert = json.load(f)
+            for k, v in gespeichert.items():
+                if k in active_config and v is not None:
+                    active_config[k] = v
+            log.info(f"⚙️ Config geladen: {CONFIG_FILE}")
+        else:
+            log.info("⚙️ Keine gespeicherte Config - Defaults aktiv")
+    except Exception as e:
+        log.error(f"Config laden fehlgeschlagen: {e} - Defaults aktiv")
+
+
+def config_speichern_datei():
+    """Aktuelle Config auf Platte schreiben."""
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(active_config, f, ensure_ascii=False, indent=2)
+        log.info(f"⚙️ Config gespeichert: {CONFIG_FILE}")
+        return True
+    except Exception as e:
+        log.error(f"Config speichern fehlgeschlagen: {e}")
+        return False
+
+
+config_laden()
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─── Schreibschutz für kritische Endpoints ───────────────────────────────────
+# Greift NUR, wenn die Env-Variable API_TOKEN gesetzt ist. Ohne sie bleibt
+# alles offen wie bisher - so kann man sich nicht versehentlich aussperren.
+def pruefe_token(x_api_token: str = Header(default="")):
+    if not API_TOKEN:
+        return True   # Schutz nicht konfiguriert -> alles erlaubt
+    if x_api_token != API_TOKEN:
+        log.warning("🔒 Zugriff abgelehnt: falscher/fehlender API-Token")
+        raise HTTPException(status_code=401, detail="Nicht autorisiert - API-Token fehlt oder ist falsch")
+    return True
+# ─────────────────────────────────────────────────────────────────────────────
 
 scheduler = BackgroundScheduler(timezone="Europe/Vienna")
 
@@ -533,7 +585,7 @@ async def dashboard():
         return HTMLResponse(content=f.read())
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks = None):
+async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks = None, _auth: bool = Depends(pruefe_token)):
     if req is None:
         req = AnalyzeRequest()
     if pipeline_running:
@@ -542,7 +594,7 @@ async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks 
     return {"status": "gestartet", "assets": req.assets, "strategy": req.strategy}
 
 @app.post("/config/speichern")
-async def config_speichern(req: ConfigRequest):
+async def config_speichern(req: ConfigRequest, _auth: bool = Depends(pruefe_token)):
     alte_strategie = active_config["strategy"]
     if req.assets   is not None: active_config["assets"]   = req.assets
     if req.strategy is not None: active_config["strategy"] = req.strategy
@@ -555,6 +607,7 @@ async def config_speichern(req: ConfigRequest):
     if req.mm_modus is not None and req.mm_modus in MODI:
         active_config["mm_modus"] = req.mm_modus
     log.info(f"Config gespeichert: {active_config}")
+    config_speichern_datei()   # persistent -> überlebt Neustarts/Deployments
     if req.strategy and req.strategy != alte_strategie:
         send_whatsapp(
             f"⚙️ *Strategie geändert*\n"
@@ -574,7 +627,7 @@ async def mm_modi():
     return {"modi": get_modi(), "aktiv": active_config["mm_modus"]}
 
 @app.post("/backtest")
-async def backtest_starten(req: BacktestRequest = None):
+async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
     """
     Regelbasierter Backtest über historische Kerzen. Vergleicht alle 6
     Money-Management-Modi über dieselbe Trade-Sequenz (RSI/MACD/EMA/BB, ohne LLM).
@@ -618,7 +671,7 @@ async def backtest_starten(req: BacktestRequest = None):
     return res
 
 @app.post("/trade")
-async def place_trade(req: TradeRequest):
+async def place_trade(req: TradeRequest, _auth: bool = Depends(pruefe_token)):
     if not capital.is_connected():
         if not await capital.connect():
             raise HTTPException(status_code=503, detail="Capital.com nicht verbunden")
@@ -642,7 +695,7 @@ async def get_positions():
     return await capital.get_positions()
 
 @app.post("/close/{deal_id}")
-async def close_position(deal_id: str):
+async def close_position(deal_id: str, _auth: bool = Depends(pruefe_token)):
     if not capital.is_connected():
         await capital.connect()
     result = await capital.close_position(deal_id)
@@ -688,14 +741,14 @@ async def demo_report():
     return {"report": generiere_tages_report()}
 
 @app.post("/demo/report/senden")
-async def demo_report_senden():
+async def demo_report_senden(_auth: bool = Depends(pruefe_token)):
     tages_snapshot()
     report = generiere_tages_report()
     send_whatsapp(report)
     return {"status": "gesendet", "report": report}
 
 @app.post("/demo/trade/{trade_id}/schliessen")
-async def demo_trade_schliessen(trade_id: str, ergebnis: str = "verloren"):
+async def demo_trade_schliessen(trade_id: str, ergebnis: str = "verloren", _auth: bool = Depends(pruefe_token)):
     trade = trade_schliessen(trade_id, ergebnis)
     return {"status": "geschlossen", "trade": trade}
 
@@ -705,12 +758,12 @@ async def demo_trades_offen():
     return {"trades": offene, "anzahl": len(offene)}
 
 @app.post("/schedule/pause")
-async def pause_schedule():
+async def pause_schedule(_auth: bool = Depends(pruefe_token)):
     scheduler.pause_job("morgen_analyse")
     return {"status": "pausiert"}
 
 @app.post("/schedule/resume")
-async def resume_schedule():
+async def resume_schedule(_auth: bool = Depends(pruefe_token)):
     scheduler.resume_job("morgen_analyse")
     return {"status": "aktiv"}
 
@@ -737,7 +790,7 @@ async def status():
     }
 
 @app.post("/connect")
-async def connect_capital():
+async def connect_capital(_auth: bool = Depends(pruefe_token)):
     ok = await capital.connect()
     return {"connected": ok}
 
