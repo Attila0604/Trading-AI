@@ -1,0 +1,30 @@
+# ─── Zugangsdaten (NIEMALS ins Repo!) ───────────────────────────
+.env
+.env.*
+*.key
+*.pem
+secrets.json
+credentials.json
+
+# ─── Daten & Laufzeit-Dateien ───────────────────────────────────
+data/
+*.xlsx
+*.xls
+config.json
+*.log
+
+# ─── Python ─────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ─── Editor / OS ────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
