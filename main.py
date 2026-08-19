@@ -420,8 +420,18 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             log.warning(f"🛡️ Risk Guardian NICHT freigegeben ({risk_report.get('message','')}) → keine Trades")
         # ───────────────────────────────────────────────────────────────────────
 
+        # ── Trading-Modus durchsetzen (war bisher wirkungslos!) ──────────
+        # "analyse" = nur Signale anzeigen, KEINE Demo-Trades öffnen
+        modus = active_config.get("mode", "semi")
+        if modus == "analyse" and all_signals:
+            log.info(f"📊 Modus 'Nur Analyse': {len(all_signals)} Signal(e) angezeigt, keine Trades geöffnet")
+        # ─────────────────────────────────────────────────────────────────
+
         for signal in all_signals:
             if not risk_ok:
+                continue
+            if modus == "analyse":
+                trades_übersprungen += 1
                 continue
             if signal.get("confidence", 0) < active_config["conf"]:
                 continue
@@ -865,13 +875,21 @@ async def demo_trades_offen():
 
 @app.post("/schedule/pause")
 async def pause_schedule(_auth: bool = Depends(pruefe_token)):
-    scheduler.pause_job("morgen_analyse")
-    return {"status": "pausiert"}
+    try:
+        scheduler.pause_job("morgen_analyse")
+        return {"status": "pausiert"}
+    except Exception as e:
+        log.error(f"Pause fehlgeschlagen: {e}")
+        raise HTTPException(status_code=400, detail=f"Zeitplan konnte nicht pausiert werden: {e}")
 
 @app.post("/schedule/resume")
 async def resume_schedule(_auth: bool = Depends(pruefe_token)):
-    scheduler.resume_job("morgen_analyse")
-    return {"status": "aktiv"}
+    try:
+        scheduler.resume_job("morgen_analyse")
+        return {"status": "aktiv"}
+    except Exception as e:
+        log.error(f"Fortsetzen fehlgeschlagen: {e}")
+        raise HTTPException(status_code=400, detail=f"Zeitplan konnte nicht fortgesetzt werden: {e}")
 
 @app.get("/status")
 async def status():
@@ -886,6 +904,7 @@ async def status():
         "strategy":          active_config["strategy"],
         "auto_trade":        AUTO_TRADE,
         "mm_modus":          active_config["mm_modus"],
+        "trading_modus":     active_config["mode"],
         "min_confidence":    active_config["conf"],
         "active_config":     active_config,
         "next_scheduled":    job.next_run_time.isoformat() if job else None,
