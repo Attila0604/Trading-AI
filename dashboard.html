@@ -1028,7 +1028,9 @@ function renderSignals(){
 
 async function approveSig(i){
   signals[i].status="approved";renderSignals();
-  toast("Demo-Trade geöffnet!","ok");
+  // Ehrlich: die Demo-Trades werden bereits von der Analyse-Pipeline
+  // geöffnet. Dieser Knopf markiert das Signal nur für die Übersicht.
+  toast("Signal als genehmigt markiert","ok");
   setTimeout(ladeDemo,1000);
 }
 function rejectSig(i){signals[i].status="rejected";renderSignals();}
@@ -1065,7 +1067,14 @@ async function ladePortfolio(){
     </tbody></table>`;
   }
 }
-async function closePos(id){if(!confirm("Position schließen?"))return;await api("/close/"+id,"POST");toast("Position geschlossen","ok");setTimeout(ladePortfolio,1500);}
+async function closePos(id){
+  if(!confirm("Position schließen?"))return;
+  const r=await api("/close/"+id,"POST");
+  if(!r){toast("Fehler beim Schließen","err");return;}
+  if(r.status==="blocked"){toast("🔒 Orders gesperrt (ORDERS_ENABLED)","err");return;}
+  if(r.status==="error"||r.error){toast("Fehler: "+(r.error||"unbekannt"),"err");return;}
+  toast("Position geschlossen","ok");setTimeout(ladePortfolio,1500);
+}
 
 // ═══ SETTINGS ═════════════════════════════════════════════════════════
 async function ladeSettings(){
@@ -1099,8 +1108,8 @@ async function connectCap(){
   if(r&&r.connected){toast("Capital.com verbunden!","ok");ladeSettings();}
   else toast("Verbindung fehlgeschlagen","err");
 }
-async function pauseSched(){await api("/schedule/pause","POST");toast("Scheduler pausiert","inf");}
-async function resumeSched(){await api("/schedule/resume","POST");toast("Scheduler aktiv","ok");}
+async function pauseSched(){const r=await api("/schedule/pause","POST");if(r&&r.status){toast("Zeitplan pausiert","ok");pollStatus();}else{toast("Fehler beim Ändern des Zeitplans","err");}}
+async function resumeSched(){const r=await api("/schedule/resume","POST");if(r&&r.status){toast("Zeitplan aktiv","ok");pollStatus();}else{toast("Fehler beim Ändern des Zeitplans","err");}}
 
 // ═══ POLLING ══════════════════════════════════════════════════════════
 async function pollStatus(){
