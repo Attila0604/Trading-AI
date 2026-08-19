@@ -388,6 +388,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             assets=req.assets, strategy=req.strategy,
             risk_pct=req.risk_pct, sl_pct=req.sl_pct,
             tp_pct=req.tp_pct, position_size=req.position_size,
+            capital_client=capital,   # eine Sitzung statt zwei
         )
 
        # ── FIX: SL/TP IMMER mit aktiven Werten überschreiben ────────────
@@ -408,13 +409,8 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         trades_übersprungen = 0
 
         # ── Volatilität pro Asset aus den Tech-Reports (für volatility-Modus) ──
-        vola_lookup = {}
-        for t in result.get("agentReports", {}).get("tech", []):
-            asset_name = t.get("asset")
-            bb = t.get("bollinger") or {}
-            width = bb.get("width_pct")
-            if asset_name and width is not None:
-                vola_lookup[asset_name] = width
+        # Echte Bollinger-Bandbreite aus der Pipeline (Rohindikatoren).
+        vola_lookup = result.get("volatility", {}) or {}
         # ───────────────────────────────────────────────────────────────────────
 
         # ── Risk Guardian: greift jetzt wirklich (vorher nur kosmetisch) ──────
@@ -474,7 +470,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             if not isinstance(demo_trade, dict):
                 demo_trade = {}
             
-            trade_id = demo_trade.get("id", demo_trade.get("trade_id", "Unbekannt"))
+            trade_id = demo_trade.get("ID", "Unbekannt")
             log.info(f"Demo-Trade: {trade_id} | {asset} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
             # -----------------------------------------------------------------------
 
