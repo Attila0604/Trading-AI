@@ -32,13 +32,10 @@ def _synchronized(fn):
     return wrapper
 
 # ─── Konfiguration ──────────────────────────────────────────
-DATA_DIR       = os.getenv("DATA_DIR", "/app/data")
-STARTKAPITAL   = float(os.getenv("DEMO_STARTKAPITAL", "1000"))
-RISIKO_PROZENT = float(os.getenv("MAX_RISK_PCT", "5"))
-# Money-Management-Modus (Fallback, wenn kein Modus im Signal mitgegeben wird)
-MM_MODUS       = os.getenv("MM_MODUS", "fixed_percent")
-SL_PROZENT     = float(os.getenv("STOP_LOSS_PCT", "1.0"))
-TP_PROZENT     = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
+# Alle Werte kommen aus config.py - EINE Quelle der Wahrheit
+from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
+                    MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS)
+from config import STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT
 EXCEL_FILE     = Path(DATA_DIR) / "Trading_Tracker.xlsx"
 SHEET_NAME     = "Demo-Kapital"
 
