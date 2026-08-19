@@ -282,7 +282,8 @@ Antworte NUR mit JSON:
 
 # ── MAIN PIPELINE ──
 async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: float = 2.0,
-                       sl_pct: float = 1.5, tp_pct: float = 3.0, position_size: float = 1000) -> dict:
+                       sl_pct: float = 1.5, tp_pct: float = 3.0, position_size: float = 1000,
+                       capital_client=None) -> dict:
     import asyncio
     from capital_client import CapitalClient
 
@@ -296,7 +297,9 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
 
     # ── 0. ECHTE MARKTDATEN HOLEN ──
     log.info("[Market Data] Hole 4H-OHLC-Kerzen für Tech Analyst...")
-    capital = CapitalClient()
+    # Vorhandenen Client mitbenutzen statt eine ZWEITE Sitzung aufzubauen.
+    # Capital.com erlaubt nur eine Anmeldung pro Sekunde.
+    capital = capital_client or CapitalClient()
     if not capital.is_connected():
         await capital.connect()
 
@@ -333,6 +336,24 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     result["timestamp"]    = __import__('datetime').datetime.now().isoformat()
     result["assets"]       = assets
     result["strategyUsed"] = strat_data.get("name", strategy)
+
+    # ── Echte Volatilität pro Asset (Bollinger-Bandbreite in %) ──────────
+    # Kommt aus den ROHEN Indikatoren, nicht aus dem LLM-Report: der liefert
+    # nur bbPosition als Wort. Ohne das bekäme der volatility-MM-Modus nie
+    # echte Zahlen und würde immer auf seinen Basiswert zurückfallen.
+    from indicators import calculate_all_indicators
+    volatility = {}
+    for asset, candles in market_data.items():
+        try:
+            if candles and len(candles) >= 30:
+                ind = calculate_all_indicators(candles)
+                bb = ind.get("bollinger") or {}
+                if bb.get("width_pct") is not None:
+                    volatility[asset] = bb["width_pct"]
+        except Exception as e:
+            log.warning(f"[Volatilität] {asset}: {e}")
+    result["volatility"] = volatility
+    log.info(f"[Volatilität] {volatility}")
 
     log.info(f"PIPELINE FERTIG | Score: {result.get('sessionScore')}/100 | Signale: {len([d for d in result.get('decisions',[]) if d.get('action')!='hold'])}")
     return result
