@@ -13,6 +13,7 @@ Professioneller Trading-Tracker mit:
 import os
 import logging
 import threading
+import config as cfg
 from datetime import datetime
 from pathlib import Path
 
@@ -764,14 +765,14 @@ class ExcelTracker:
             ("SECTION", "Trading-Config"),
             ("Assets",          os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500")),
             ("Strategie",       os.getenv("TRADING_STRATEGY", "adaptive")),
-            ("Max Risiko %",    os.getenv("MAX_RISK_PCT", "2")),
-            ("Stop Loss %",     os.getenv("STOP_LOSS_PCT", "1.5")),
-            ("Take Profit %",   os.getenv("TAKE_PROFIT_PCT", "3.0")),
+            ("Max Risiko %",    cfg.MAX_RISK_PCT),
+            ("Stop Loss %",     cfg.STOP_LOSS_PCT),
+            ("Take Profit %",   cfg.TAKE_PROFIT_PCT),
             ("Position Size €", os.getenv("POSITION_SIZE_EUR", "1000")),
             ("Auto Trade",      os.getenv("AUTO_TRADE", "false")),
             ("Capital.com",     "DEMO" if os.getenv("CAPITAL_DEMO", "true").lower() == "true" else "LIVE"),
             ("SECTION", "Demo-Kapital"),
-            ("Startkapital €",  os.getenv("DEMO_STARTKAPITAL", "1000")),
+            ("Startkapital €",  cfg.DEMO_STARTKAPITAL),
             ("Min. Konfidenz",  os.getenv("MIN_CONFIDENCE", "70")),
             ("Schedule Stunden", os.getenv("SCHEDULE_INTERVAL_HOURS", "1")),
         ]
