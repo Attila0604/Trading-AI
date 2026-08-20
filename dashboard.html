@@ -663,6 +663,12 @@ function renderChart(snapshots){
   document.getElementById("chart-trend").style.color=isUp?"var(--green)":"var(--red)";
 }
 
+function tv(t, ...keys){
+  // Trade-Wert holen: akzeptiert Excel-Spalten ("Asset") und Kleinschreibung ("asset")
+  for(const k of keys){ if(t[k]!==undefined && t[k]!==null && t[k]!=="") return t[k]; }
+  return undefined;
+}
+
 function renderOffeneTrades(trades){
   const wrap=document.getElementById("offene-trades-wrap");
   if(!trades.length){wrap.innerHTML=`<div class="empty"><div class="empty-i">🔄</div><div class="empty-t">Keine offenen Trades</div></div>`;return;}
@@ -681,10 +687,12 @@ function renderOffeneTrades(trades){
     <th>Aktion</th>
   </tr></thead><tbody>
   ${trades.map(t=>{
-    const entry = parseFloat(t.entry_price||0);
-    const slPct = parseFloat(t.sl_pct||1.5);
-    const tpPct = parseFloat(t.tp_pct||3.0);
-    const isBuy = t.action === "buy";
+    const entry = parseFloat(tv(t,"Entry-Price","entry_price")||0);
+    const slPct = parseFloat(tv(t,"SL %","sl_pct")||1.5);
+    const tpPct = parseFloat(tv(t,"TP %","tp_pct")||3.0);
+    const act   = String(tv(t,"Action","action")||"").toLowerCase();
+    const tid   = tv(t,"ID","id")||"—";
+    const isBuy = act === "buy" || act === "long";
 
     // Absoluter SL/TP Preis berechnen
     let slPreis = "—", tpPreis = "—";
@@ -699,20 +707,20 @@ function renderOffeneTrades(trades){
     }
 
     return`<tr>
-      <td>${t.id}</td>
-      <td style="color:var(--cyan);font-weight:700">${t.asset||"—"}</td>
-      <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${(t.action||"").toUpperCase()}</span></td>
-      <td>€${fmt(t.einsatz)}</td>
+      <td>${tid}</td>
+      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
+      <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${act.toUpperCase()}</span></td>
+      <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
       <td style="color:var(--gold);font-weight:600">${entry>0?fmtP(entry):"—"}</td>
       <td style="color:var(--red);font-weight:600">${slPreis}</td>
       <td style="color:var(--green);font-weight:600">${tpPreis}</td>
       <td style="color:var(--red)">${slPct}%</td>
       <td style="color:var(--green)">${tpPct}%</td>
-      <td style="color:${(t.konfidenz||0)>=70?"var(--green)":"var(--gold)"}">${t.konfidenz||0}%</td>
-      <td style="color:var(--muted);font-size:9px">${t.geoeffnet_am?new Date(t.geoeffnet_am).toLocaleString("de-AT"):"—"}</td>
+      <td style="color:${(tv(t,"Konfidenz","konfidenz")||0)>=70?"var(--green)":"var(--gold)"}">${tv(t,"Konfidenz","konfidenz")||0}%</td>
+      <td style="color:var(--muted);font-size:9px">${tv(t,"Geöffnet am","geoeffnet_am")||"—"}</td>
       <td><div style="display:flex;gap:4px">
-        <button onclick="schliesseDemo('${t.id}','gewonnen')" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
-        <button onclick="schliesseDemo('${t.id}','verloren')" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
+        <button onclick="schliesseDemo('${tid}','gewonnen')" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
+        <button onclick="schliesseDemo('${tid}','verloren')" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
       </div></td>
     </tr>`;
   }).join("")}
@@ -727,19 +735,20 @@ function renderLetzteTrades(trades){
     <th>Entry</th><th>Einsatz</th><th>Ergebnis</th><th>P&L</th><th>Geschlossen</th>
   </tr></thead><tbody>
   ${trades.map(t=>{
-    const pnl=t.pnl||0;
-    const entry=parseFloat(t.entry_price||0);
-    const color=t.status==="gewonnen"?"var(--green)":t.status==="verloren"?"var(--red)":"var(--muted)";
-    const emoji=t.status==="gewonnen"?"✅":t.status==="verloren"?"❌":"⏸";
+    const pnl=parseFloat(tv(t,"P&L","pnl")||0);
+    const entry=parseFloat(tv(t,"Entry-Price","entry_price")||0);
+    const st=String(tv(t,"Status","status")||"").toLowerCase();
+    const color=st==="gewonnen"?"var(--green)":st==="verloren"?"var(--red)":"var(--muted)";
+    const emoji=st==="gewonnen"?"✅":st==="verloren"?"❌":"⏸";
     return`<tr>
-      <td>${t.id}</td>
-      <td style="color:var(--cyan);font-weight:700">${t.asset||"—"}</td>
-      <td><span style="color:${t.action==="buy"?"var(--green)":"var(--red)"}">${(t.action||"").toUpperCase()}</span></td>
+      <td>${tv(t,"ID","id")||"—"}</td>
+      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
+      <td><span style="color:${String(tv(t,"Action","action")||"").toLowerCase()==="buy"?"var(--green)":"var(--red)"}">${String(tv(t,"Action","action")||"").toUpperCase()}</span></td>
       <td style="color:var(--gold)">${entry>0?fmtP(entry):"—"}</td>
-      <td>€${fmt(t.einsatz)}</td>
-      <td><span style="color:${color};font-weight:700">${emoji} ${(t.status||"").toUpperCase()}</span></td>
+      <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
+      <td><span style="color:${color};font-weight:700">${emoji} ${st.toUpperCase()}</span></td>
       <td style="color:${pnl>=0?"var(--green)":"var(--red)"};font-weight:700">${pnl>=0?"+":""}€${fmt(pnl)}</td>
-      <td style="color:var(--muted);font-size:9px">${t.geschlossen_am?new Date(t.geschlossen_am).toLocaleString("de-AT"):"—"}</td>
+      <td style="color:var(--muted);font-size:9px">${tv(t,"Geschlossen am","geschlossen_am")||"—"}</td>
     </tr>`;
   }).join("")}
   </tbody></table></div>`;
