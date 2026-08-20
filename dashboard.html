@@ -284,7 +284,8 @@ button:hover{filter:brightness(1.15)}
         </div>
         <div style="display:flex;gap:6px;margin-bottom:6px">
           <select id="bt-asset" style="flex:1;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:6px 9px;color:var(--text);font-size:11px;font-family:var(--font);outline:none"></select>
-          <button id="bt-btn" onclick="backtestStarten()" style="background:#a855f722;color:#a855f7;border:1px solid #a855f755;border-radius:4px;padding:5px 16px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">▶ Backtest starten</button>
+          <button id="bt-btn" onclick="backtestStarten()" style="background:#a855f722;color:#a855f7;border:1px solid #a855f755;border-radius:4px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">▶ Backtest</button>
+          <button id="bt-opt" onclick="parameterOptimieren()" style="background:#10b98122;color:var(--green);border:1px solid #10b98155;border-radius:4px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">🎯 Beste Einstellung finden</button>
         </div>
         <div style="display:flex;gap:6px;margin-bottom:10px">
           <select id="bt-res" style="flex:1;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:5px 8px;color:var(--muted);font-size:10px;font-family:var(--font);outline:none">
@@ -877,6 +878,37 @@ async function systemcheck(){
       <span style="color:var(--text);min-width:105px">${c.name}</span>
       <span style="color:${farbe[c.status]};flex:1">${c.info}</span></div>`;
   });
+  box.innerHTML=html;
+}
+
+
+async function parameterOptimieren(){
+  const asset=document.getElementById("bt-asset").value||cfg.assets[0];
+  const res=document.getElementById("bt-res").value;
+  const cnt=parseInt(document.getElementById("bt-count").value);
+  const box=document.getElementById("bt-result");
+  const btn=document.getElementById("bt-opt");
+  btn.disabled=true;btn.textContent="⏳ suche…";
+  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Teste alle SL/TP-Kombinationen für <b>${asset}</b>…</div>`;
+  const r=await api("/backtest/optimieren","POST",{asset:asset,resolution:res,count:cnt});
+  btn.disabled=false;btn.textContent="🎯 Beste Einstellung finden";
+  if(!r||r.error){box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Optimierung fehlgeschlagen"}</div>`;return;}
+  let html=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">🎯 ${r.signale} Signale | ${r.getestet} Kombinationen getestet | <b style="color:${r.profitabel>0?'var(--green)':'var(--red)'}">${r.profitabel} mit echtem Vorsprung</b></div>`;
+  html+=`<table style="width:100%;font-size:10px;border-collapse:collapse">
+    <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">SL / TP</td><td style="text-align:center">SCHW</td><td style="text-align:right">TRADES</td><td style="text-align:right">WIN</td><td style="text-align:right">NÖTIG</td><td style="text-align:right">VORSPRUNG</td><td style="text-align:right">PF</td></tr>`;
+  r.beste.forEach((x,i)=>{
+    const gut=x.vorsprung>0;
+    html+=`<tr style="border-top:1px solid var(--b)">
+      <td style="padding:5px 0;color:${i===0?'var(--gold)':'var(--text)'};font-weight:${i===0?'700':'400'}">${i===0?'🏆 ':''}${x.sl_pct}% / ${x.tp_pct}%</td>
+      <td style="text-align:center;color:var(--muted)">${x.min_confluence}</td>
+      <td style="text-align:right;color:var(--muted)">${x.trades}</td>
+      <td style="text-align:right;color:var(--text)">${x.win_rate}%</td>
+      <td style="text-align:right;color:var(--muted)">${x.benoetigte_wr}%</td>
+      <td style="text-align:right;color:${gut?'var(--green)':'var(--red)'};font-weight:600">${x.vorsprung>0?'+':''}${x.vorsprung}%</td>
+      <td style="text-align:right;color:var(--text)">${x.profit_factor}</td>
+    </tr>`;
+  });
+  html+=`</table><div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 <b>VORSPRUNG</b> = Win-Rate minus der Rate, die dieses SL/TP-Verhältnis rechnerisch zum Break-even braucht. Nur positiv = echter Edge.<br>⚠️ ${r.hinweis}</div>`;
   box.innerHTML=html;
 }
 
