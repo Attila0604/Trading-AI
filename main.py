@@ -18,7 +18,7 @@ from demo_tracker import (
     get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis
 )
 from money_management import get_modi, MODI
-from backtest import vergleiche_modi
+from backtest import vergleiche_modi, optimiere_parameter
 from indicators import calculate_all_indicators
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -741,6 +741,27 @@ async def selftest():
         "checks": checks,
         "zeit": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
     }
+
+@app.post("/backtest/optimieren")
+async def backtest_optimieren(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
+    """
+    Probiert systematisch SL/TP-Verhältnisse und Signal-Schwellen durch und
+    zeigt, welche Kombination auf diesem Asset einen echten Vorsprung hätte.
+    """
+    if req is None:
+        req = BacktestRequest()
+    asset = req.asset or (active_config["assets"][0] if active_config["assets"] else "BTC/USD")
+    if not capital.is_connected():
+        await capital.connect()
+    epic    = asset_to_epic(asset)
+    candles = await capital.get_historical_prices(epic, req.resolution, req.count)
+    if not candles or len(candles) < 80:
+        raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
+    res = optimiere_parameter(candles, startkapital=req.startkapital,
+                              mm_modus=active_config["mm_modus"])
+    res["asset"] = asset
+    res["resolution"] = req.resolution
+    return res
 
 @app.post("/backtest")
 async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
