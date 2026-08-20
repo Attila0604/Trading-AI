@@ -22,6 +22,80 @@ log = logging.getLogger(__name__)
 
 
 # ── 1. Signal-/Trade-Sequenz aus Kerzen (einmalig, kapitalunabhängig) ────────
+def berechne_signale(candles: list, warmup: int = 50) -> list:
+    """
+    Berechnet die Indikator-Signale EINMAL pro Kerze.
+    Teuerster Teil des Backtests - wird für alle SL/TP-Kombinationen
+    wiederverwendet, sonst dauert eine Optimierung ewig.
+    Liefert Liste von (index, action, confluence, vola, close).
+    """
+    signale = []
+    for i in range(warmup, len(candles)):
+        window = candles[max(0, i - 199):i + 1]
+        ind = calculate_all_indicators(window)
+        if "error" in ind:
+            continue
+        sig = ind.get("signal", "neutral")
+        action = "long" if sig in ("buy", "strong buy") else ("short" if sig in ("sell", "strong sell") else None)
+        if not action:
+            continue
+        signale.append({
+            "i":      i,
+            "action": action,
+            "conf":   ind.get("confluenceScore", 5),
+            "vola":   (ind.get("bollinger") or {}).get("width_pct", 0) or 0,
+            "close":  candles[i].get("close"),
+        })
+    return signale
+
+
+def trades_aus_signalen(candles: list, signale: list, sl_pct: float, tp_pct: float,
+                        min_confluence: int = 6) -> list:
+    """Erzeugt Trades aus vorberechneten Signalen für EIN SL/TP-Paar."""
+    trades = []
+    pos = None
+    sig_by_i = {s["i"]: s for s in signale}
+
+    for i in range(len(candles)):
+        bar = candles[i]
+        hi, lo = bar.get("high"), bar.get("low")
+        if hi is None or lo is None:
+            continue
+
+        if pos:
+            if pos["action"] == "long":
+                sl_hit, tp_hit = lo <= pos["sl"], hi >= pos["tp"]
+            else:
+                sl_hit, tp_hit = hi >= pos["sl"], lo <= pos["tp"]
+            ergebnis = None
+            if sl_hit and tp_hit:
+                ergebnis = "verloren"
+            elif tp_hit:
+                ergebnis = "gewonnen"
+            elif sl_hit:
+                ergebnis = "verloren"
+            if ergebnis:
+                trades.append({"action": pos["action"], "entry": pos["entry"],
+                               "exit": pos["sl"] if ergebnis == "verloren" else pos["tp"],
+                               "ergebnis": ergebnis, "confidence": pos["confidence"],
+                               "vola": pos["vola"], "entry_i": pos["entry_i"], "exit_i": i})
+                pos = None
+                continue
+
+        if pos is None and i in sig_by_i:
+            s = sig_by_i[i]
+            if s["conf"] < min_confluence or not s["close"]:
+                continue
+            entry = s["close"]
+            if s["action"] == "long":
+                sl, tp = entry * (1 - sl_pct / 100), entry * (1 + tp_pct / 100)
+            else:
+                sl, tp = entry * (1 + sl_pct / 100), entry * (1 - tp_pct / 100)
+            pos = {"action": s["action"], "entry": entry, "sl": sl, "tp": tp,
+                   "confidence": s["conf"], "vola": s["vola"], "entry_i": i}
+    return trades
+
+
 def generiere_trades(candles: list, sl_pct: float = 1.5, tp_pct: float = 3.0,
                      min_confluence: int = 6, warmup: int = 50) -> list:
     """
@@ -199,4 +273,67 @@ def vergleiche_modi(candles: list, startkapital: float = 1000.0,
                              "Alle Modi laufen über dieselben Trades - nur die Positionsgröße unterscheidet sich."),
         "ergebnisse":     ergebnisse,
         "bester_modus":   ergebnisse[0]["mm_modus"] if ergebnisse else None,
+    }
+
+
+# ── 4. Parameter-Optimierung: welche SL/TP/Schwelle funktioniert? ────────────
+def optimiere_parameter(candles: list, startkapital: float = 1000.0,
+                        mm_modus: str = "fixed_percent", min_trades: int = 25,
+                        warmup: int = 50) -> dict:
+    """
+    Probiert systematisch SL/TP-Verhältnisse und Signal-Schwellen durch.
+
+    WICHTIG - ehrliche Einordnung: Wenn man viele Kombinationen testet, findet
+    man fast immer eine, die auf DIESEN Daten gut aussieht. Das ist oft blosse
+    Kurvenanpassung und sagt wenig über die Zukunft. Deshalb:
+      - Kombinationen mit zu wenigen Trades werden aussortiert
+      - "benoetigte_wr" zeigt, welche Win-Rate das SL/TP-Verhaeltnis rechnerisch
+        braucht, um bei null zu landen - erst ein Abstand nach oben ist ein Edge
+      - Ein Ergebnis zaehlt erst, wenn es auf einem ZWEITEN Asset ebenfalls haelt
+    """
+    if not candles or len(candles) < warmup + 30:
+        return {"error": f"Zu wenige Kerzen: {len(candles) if candles else 0}"}
+
+    signale = berechne_signale(candles, warmup)   # nur EINMAL berechnen
+    if len(signale) < 5:
+        return {"error": f"Zu wenige Signale in den Daten ({len(signale)})"}
+
+    ergebnisse = []
+    for min_conf in (5, 6, 7):
+        for sl in (0.5, 1.0, 1.5, 2.0):
+            for rr in (1.0, 1.5, 2.0, 3.0):      # TP als Vielfaches des SL
+                tp = round(sl * rr, 2)
+                seq = trades_aus_signalen(candles, signale, sl, tp, min_conf)
+                if len(seq) < min_trades:
+                    continue
+                res = simuliere_mm(seq, mm_modus, startkapital, sl, tp)
+                res.pop("equity_curve", None)
+                benoetigt = round(100.0 / (1.0 + rr), 1)     # Break-even-Win-Rate
+                res.update({
+                    "sl_pct": sl, "tp_pct": tp, "rr": rr,
+                    "min_confluence": min_conf,
+                    "benoetigte_wr": benoetigt,
+                    "vorsprung": round(res["win_rate"] - benoetigt, 1),
+                })
+                ergebnisse.append(res)
+
+    if not ergebnisse:
+        return {"error": f"Keine Kombination erreicht {min_trades} Trades - mehr Kerzen waehlen",
+                "signale": len(signale)}
+
+    # Nach Vorsprung sortieren (Edge), nicht nach ROI - ROI belohnt Zufallstreffer
+    ergebnisse.sort(key=lambda r: (r["vorsprung"], r["profit_factor"] if isinstance(r["profit_factor"], (int, float)) else 0), reverse=True)
+
+    profitabel = [r for r in ergebnisse if r["vorsprung"] > 0]
+    return {
+        "kerzen":        len(candles),
+        "signale":       len(signale),
+        "getestet":      len(ergebnisse),
+        "profitabel":    len(profitabel),
+        "mm_modus":      mm_modus,
+        "beste":         ergebnisse[:8],
+        "hinweis": ("Kein Parametersatz hat einen echten Vorsprung - die Signal-Logik "
+                    "traegt auf diesem Asset nicht." if not profitabel else
+                    "Vor dem Uebernehmen auf einem ZWEITEN Asset gegenpruefen - sonst ist es "
+                    "nur Kurvenanpassung an diese Daten."),
     }
