@@ -262,6 +262,14 @@ async def _check_trade_results(offene: list):
                     if ergebnis:
                         log.info(f"{'✅ TP' if ergebnis=='gewonnen' else '❌ SL'} (Momentanpreis) {asset} | {current_price:.5f}")
 
+            # Trades ohne Einstiegspreis (z.B. aus einer Verbindungsstörung) sind
+            # nicht auswertbar -> als "abgebrochen" schließen, NICHT als Verlust
+            # werten, sonst verfälschen sie die Win-Rate.
+            if entry_price <= 0 and alter_std > 4:
+                trade_schliessen(trade_id, "abgebrochen", 0.0)
+                log.info(f"🗑️ {trade_id} ohne Entry-Price → abgebrochen (zählt nicht in der Statistik)")
+                continue
+
             # Timeout: nach 48h zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
             if ergebnis is None and alter_std > 48:
                 pnl_override = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
@@ -463,7 +471,11 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     await asyncio.sleep(2)
 
             if entry_price == 0:
-                log.warning(f"⚠️ Kein Entry-Price für {asset} nach 3 Versuchen")
+                # Ohne Einstiegspreis lässt sich später kein Ergebnis und kein
+                # P&L berechnen -> Trade GAR NICHT öffnen statt Karteileiche anlegen.
+                log.warning(f"⚠️ Kein Entry-Price für {asset} nach 3 Versuchen - Trade übersprungen")
+                trades_übersprungen += 1
+                continue
             # ─────────────────────────────────────────────────────────────
 
             demo_trade = signal_oeffnen({
