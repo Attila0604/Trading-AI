@@ -40,6 +40,12 @@ MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
 MM_MODUS        = os.getenv("MM_MODUS", "fixed_percent")
 # Schreibschutz: nur aktiv, wenn API_TOKEN gesetzt ist (sonst offen wie bisher)
 API_TOKEN       = os.getenv("API_TOKEN", "").strip()
+# Wie lange darf ein Trade laufen, bevor er zum Marktpreis geschlossen wird?
+# WICHTIG: Der Backtest kennt KEINE Zeitbegrenzung - Trades laufen dort bis SL
+# oder TP. Ein zu kurzer Timeout kappt die Gewinner (die brauchen länger als die
+# Verlierer) und macht die Live-Ergebnisse systematisch schlechter als den
+# Backtest. Bei Tages-Kerzen dauert ein Trade im Schnitt ~12 Tage.
+MAX_TRADE_TAGE  = float(os.getenv("MAX_TRADE_TAGE", "14"))
 DASHBOARD_URL   = os.getenv("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
 
 # Assets die am Wochenende handelbar sind
@@ -271,10 +277,10 @@ async def _check_trade_results(offene: list):
                 continue
 
             # Timeout: nach 48h zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
-            if ergebnis is None and alter_std > 48:
+            if ergebnis is None and alter_std > MAX_TRADE_TAGE * 24:
                 pnl_override = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
                 ergebnis = "gewonnen" if pnl_override > 0 else "verloren"
-                log.info(f"⏰ Trade {trade_id} nach 48h zum Marktpreis geschlossen | P&L €{pnl_override:.2f}")
+                log.info(f"⏰ Trade {trade_id} nach {MAX_TRADE_TAGE:.0f} Tagen zum Marktpreis geschlossen | P&L €{pnl_override:.2f}")
 
             if ergebnis:
                 geschlossen = trade_schliessen(trade_id, ergebnis, pnl_override)
@@ -718,13 +724,13 @@ async def selftest():
         for t in offene:
             try:
                 geo = datetime.fromisoformat(str(t.get("Geöffnet am", "")))
-                if (datetime.now() - geo).total_seconds() / 3600 > 52:
+                if (datetime.now() - geo).total_seconds() / 3600 > MAX_TRADE_TAGE * 24 + 4:
                     alte += 1
             except Exception:
                 pass
         add("Trade-Auswertung", alte == 0,
             f"{len(offene)} offen, {abgeschlossen} abgeschlossen" +
-            (f" - ⚠️ {alte} Trades älter als 52h werden nicht geschlossen!" if alte else ""),
+            (f" - ⚠️ {alte} Trades älter als {MAX_TRADE_TAGE:.0f} Tage werden nicht geschlossen!" if alte else ""),
             warn=True)
         add("Demo-Kapital", True, f"€{stats['aktuelles_kapital']:.2f} | Win-Rate {stats['statistik']['win_rate']}%")
     except Exception as e:
@@ -744,6 +750,7 @@ async def selftest():
     # 9. Zeitpläne
     jobs = scheduler.get_jobs()
     add("Zeitpläne", len(jobs) >= 3, f"{len(jobs)} Jobs aktiv")
+    add("Max. Haltedauer", True, f"{MAX_TRADE_TAGE:.0f} Tage (Backtest kennt keine Begrenzung)")
 
     fehler   = sum(1 for c in checks if c["status"] == "fehler")
     warnungen = sum(1 for c in checks if c["status"] == "warn")
