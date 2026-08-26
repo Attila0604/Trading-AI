@@ -255,6 +255,18 @@ def vergleiche_modi(candles: list, startkapital: float = 1000.0,
 
     trade_seq = generiere_trades(candles, sl_pct, tp_pct, min_confluence, warmup)
 
+    # Haltedauer messen: zeigt, ob der Live-Timeout (MAX_TRADE_TAGE) lang genug
+    # ist. Der Backtest selbst kennt keine Begrenzung - laufen Trades hier im
+    # Schnitt länger als der Live-Timeout, werden live die Gewinner gekappt.
+    dauern = sorted((t["exit_i"] - t["entry_i"]) for t in trade_seq)
+    if dauern:
+        median = dauern[len(dauern)//2]
+        p90    = dauern[int(len(dauern)*0.9)] if len(dauern) > 1 else dauern[0]
+        haltedauer = {"median_kerzen": median, "p90_kerzen": p90,
+                      "max_kerzen": dauern[-1], "schnitt_kerzen": round(sum(dauern)/len(dauern), 1)}
+    else:
+        haltedauer = {}
+
     ergebnisse = []
     for modus in MODI.keys():
         res = simuliere_mm(trade_seq, modus, startkapital, sl_pct, tp_pct)
@@ -271,6 +283,7 @@ def vergleiche_modi(candles: list, startkapital: float = 1000.0,
                            "min_confluence": min_confluence, "startkapital": startkapital},
         "baseline_hinweis": ("Regelbasierte Baseline (RSI/MACD/EMA/BB, ohne LLM). "
                              "Alle Modi laufen über dieselben Trades - nur die Positionsgröße unterscheidet sich."),
+        "haltedauer":     haltedauer,
         "ergebnisse":     ergebnisse,
         "bester_modus":   ergebnisse[0]["mm_modus"] if ergebnisse else None,
     }
