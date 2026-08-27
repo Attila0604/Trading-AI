@@ -336,9 +336,15 @@ def get_statistik() -> dict:
         }
 
     offene = [t for t in trades if t.get("Status") == "offen"]
-    geschlossene = [t for t in trades if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
-    gewonnen = sum(1 for t in trades if t.get("Status") == "gewonnen")
-    verloren = sum(1 for t in trades if t.get("Status") == "verloren")
+    # Trades OHNE Einstiegspreis sind nicht auswertbar (entstanden z.B. bei einer
+    # Verbindungsstörung): sie haben P&L 0 und würden die Win-Rate verfälschen.
+    # Sie werden hier rückwirkend aus der Statistik genommen, egal welchen Status
+    # sie tragen - das wirkt auch für Alt-Trades, die noch "verloren" heißen.
+    auswertbar = [t for t in trades if _safe_float(t.get("Entry-Price", 0)) > 0]
+
+    geschlossene = [t for t in auswertbar if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
+    gewonnen = sum(1 for t in auswertbar if t.get("Status") == "gewonnen")
+    verloren = sum(1 for t in auswertbar if t.get("Status") == "verloren")
 
     gesamt_pnl = round(sum(_safe_float(t.get("P&L", 0)) for t in trades), 2)
     aktuelles_kapital = round(STARTKAPITAL + gesamt_pnl, 2)
@@ -378,7 +384,7 @@ def get_statistik() -> dict:
         "pnl_gesamt": gesamt_pnl,
         "erstellt_am": datetime.now().isoformat(),
         "statistik": {
-            "gesamt_trades": len(trades),
+            "gesamt_trades": len(auswertbar),
             "gewonnen": gewonnen,
             "verloren": verloren,
             "offen": len(offene),
