@@ -192,5 +192,10 @@ Greift in `demo_tracker.get_risiko_status()` **vor** jedem Demo-Trade – nicht 
 | `MAX_OFFENE_TRADES` | 6 | Max. gleichzeitig offene Demo-Trades |
 | `EIN_TRADE_PRO_ASSET` | true | Kein zweiter Trade (auch nicht gegenläufig) im selben Asset |
 | `ZEITZONE` | Europe/Vienna | Alle Zeitstempel (Excel, Timeout, Logs) |
+| `BREAKEVEN_NACH_TAGEN` | 4 | Trade nach X Tagen im Plus (ohne TP) → Stop auf Entry; fällt der Kurs zurück, Schließen mit P&L 0 (Status `breakeven`). 0 = aus |
+| `MAX_TRADE_TAGE` | 14 | Danach Schließen zum Marktpreis |
+
+Manuelles Schließen im Dashboard: **💱 Markt** = zum aktuellen Kurs (echter P&L, mit Vorschau), ✅/❌ = voller TP/SL.
+API: `GET /demo/trade/{id}/markt` (Vorschau), `POST /demo/trade/{id}/schliessen?ergebnis=markt|gewonnen|verloren|breakeven`.
 
 Status: `GET /demo/risiko`, außerdem in `/status` und `/selftest`.
