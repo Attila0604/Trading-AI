@@ -171,11 +171,11 @@ button:hover{filter:brightness(1.15)}
       <div class="mm-card">
         <div class="mm-label">RISIKO-STUFE</div>
         <div class="mm-value" id="mm-stufe" style="color:var(--cyan)">NORMAL</div>
-        <div class="mm-sub" id="mm-stufe-sub">Win Rate: —%</div>
+        <div class="mm-sub" id="mm-stufe-sub">Offen: —</div>
         <div class="risk-bar"><div class="risk-fill" id="mm-risk-bar" style="background:var(--cyan);width:50%"></div></div>
       </div>
       <div class="mm-card">
-        <div class="mm-label">DRAWDOWN SCHUTZ</div>
+        <div class="mm-label">DRAWDOWN SCHUTZ (BACKEND)</div>
         <div class="mm-value" id="mm-drawdown" style="color:var(--green)">OK</div>
         <div class="mm-sub" id="mm-drawdown-sub">Max DD: 0%</div>
       </div>
@@ -439,111 +439,78 @@ async function api(path,method="GET",body=null,retry=true){
 }
 
 // ═══ MONEY MANAGEMENT ═════════════════════════════════════════════════
-function berechneMoneyManagement(stats, kapital, startkapital) {
-  const wr      = stats.win_rate || 0;
-  const dd      = stats.max_drawdown || 0;
-  const trades  = stats.gesamt_trades || 0;
-  const verlust = stats.verloren || 0;
+// Zeigt NUR noch an, was das Backend (demo_tracker.get_risiko_status)
+// tatsächlich entscheidet. Vorher rechnete diese Funktion selbst und
+// zeigte "ANALYSE PAUSIERT", während das Backend munter weiter handelte.
+function berechneMoneyManagement(stats, kapital, startkapital, risiko) {
+  const r = risiko || {};
+  const stufe   = r.stufe || "NORMAL";
+  const faktor  = (r.einsatz_faktor === undefined) ? 1 : r.einsatz_faktor;
+  const basisPct = (typeof cfg !== "undefined" && cfg && cfg.risk) ? Number(cfg.risk) : 2.0;
+  const risikoProzent = Math.round(basisPct * faktor * 100) / 100;
+  const einsatz = Math.round(kapital * risikoProzent / 100 * 100) / 100;
 
-  // Streak berechnen (vereinfacht aus letzte Trades)
-  let streak = 0;
-
-  // Risiko-Stufe bestimmen
-  let stufe = "NORMAL";
-  let risikoProzent = 2.0;
-  let stufeColor = "var(--cyan)";
-  let statusColor = "var(--green)";
-  let statusText = "NORMAL";
-  let alert = null;
-
-  // Drawdown Schutz
-  if (dd > 10) {
-    stufe = "KRITISCH";
-    risikoProzent = 0;
-    stufeColor = "var(--red)";
-    statusColor = "var(--red)";
-    statusText = "ANALYSE PAUSIERT";
-    alert = `⛔ Drawdown ${dd.toFixed(1)}% überschreitet 10% Limit! Analyse pausiert bis Erholung.`;
-  } else if (dd > 5) {
-    stufe = "VORSICHT";
-    risikoProzent = 1.0;
-    stufeColor = "var(--orange)";
-    statusColor = "var(--orange)";
-    statusText = "VORSICHT";
-    alert = `⚠️ Drawdown ${dd.toFixed(1)}% → Einsatz auf 1% reduziert.`;
-  } else if (trades >= 5) {
-    // Genug Trades für Win Rate Bewertung
-    if (wr >= 60) {
-      stufe = "AGGRESSIV";
-      risikoProzent = 3.0;
-      stufeColor = "var(--green)";
-      statusText = "AGGRESSIV";
-    } else if (wr < 40) {
-      stufe = "DEFENSIV";
-      risikoProzent = 1.0;
-      stufeColor = "var(--orange)";
-      statusText = "DEFENSIV";
-    }
+  let stufeColor = "var(--cyan)", statusColor = "var(--green)", statusText = "NORMAL", alert = null;
+  if (stufe === "PAUSE") {
+    stufeColor = "var(--red)"; statusColor = "var(--red)"; statusText = "TRADES PAUSIERT";
+  } else if (stufe === "EXPOSURE_VOLL") {
+    stufeColor = "var(--orange)"; statusColor = "var(--orange)"; statusText = "EXPOSURE VOLL";
+  } else if (stufe === "VORSICHT") {
+    stufeColor = "var(--orange)"; statusColor = "var(--orange)"; statusText = "VORSICHT";
   }
+  if (r.gruende && r.gruende.length) alert = "🛡️ " + r.gruende.join(" · ");
 
-  const einsatz = Math.max(1, Math.round(kapital * risikoProzent / 100 * 100) / 100);
   const riskBarWidth = Math.min(100, (risikoProzent / 4) * 100);
   const riskBarColor = risikoProzent >= 3 ? "var(--green)" : risikoProzent >= 2 ? "var(--cyan)" : risikoProzent >= 1 ? "var(--orange)" : "var(--red)";
-
-  return { stufe, risikoProzent, einsatz, stufeColor, statusColor, statusText, alert, riskBarWidth, riskBarColor };
+  return { stufe: statusText, risikoProzent, einsatz, stufeColor, statusColor, statusText, alert, riskBarWidth, riskBarColor };
 }
 
-function updateMoneyManagement(stats, kapital, startkapital) {
-  const mm = berechneMoneyManagement(stats, kapital, startkapital);
+function updateMoneyManagement(stats, kapital, startkapital, risiko) {
+  const mm = berechneMoneyManagement(stats, kapital, startkapital, risiko);
+  const r = risiko || {};
 
-  // Status Badge
   const statusEl = document.getElementById("mm-status");
   if (statusEl) {
     statusEl.textContent = mm.statusText;
     statusEl.style.cssText = `background:${mm.statusColor}20;color:${mm.statusColor};border:1px solid ${mm.statusColor}33`;
   }
 
-  // Einsatz
   const einsatzEl = document.getElementById("mm-einsatz");
-  if (einsatzEl) {
-    einsatzEl.textContent = `€${fmt(mm.einsatz)}`;
-    einsatzEl.style.color = mm.stufeColor;
-  }
+  if (einsatzEl) { einsatzEl.textContent = `€${fmt(mm.einsatz)}`; einsatzEl.style.color = mm.stufeColor; }
   const einsatzSub = document.getElementById("mm-einsatz-sub");
-  if (einsatzSub) einsatzSub.textContent = `${mm.risikoProzent}% des Kapitals`;
+  if (einsatzSub) einsatzSub.textContent = `${mm.risikoProzent}% des Kapitals` + (r.einsatz_faktor !== undefined && r.einsatz_faktor < 1 ? ` (×${r.einsatz_faktor})` : "");
 
-  // Stufe
   const stufeEl = document.getElementById("mm-stufe");
-  if (stufeEl) {
-    stufeEl.textContent = mm.stufe;
-    stufeEl.style.color = mm.stufeColor;
-  }
+  if (stufeEl) { stufeEl.textContent = mm.stufe; stufeEl.style.color = mm.stufeColor; }
   const stufeSub = document.getElementById("mm-stufe-sub");
-  if (stufeSub) stufeSub.textContent = `Win Rate: ${(stats.win_rate||0).toFixed(1)}%`;
-
-  // Risk Bar
-  const riskBar = document.getElementById("mm-risk-bar");
-  if (riskBar) {
-    riskBar.style.width = mm.riskBarWidth + "%";
-    riskBar.style.background = mm.riskBarColor;
+  if (stufeSub) {
+    const lim = r.limits || {};
+    stufeSub.textContent = `Offen: ${(r.offene_exposure_pct||0).toFixed(1)}% / ${lim.max_exposure_pct||"–"}% · ${r.offen||0} / ${lim.max_offene_trades||"–"} Trades`;
   }
 
-  // Drawdown
+  const riskBar = document.getElementById("mm-risk-bar");
+  if (riskBar) { riskBar.style.width = mm.riskBarWidth + "%"; riskBar.style.background = mm.riskBarColor; }
+
+  // Drawdown: AKTUELLER Abstand vom Kapital-Hoch entscheidet, nicht der historische Max-DD
   const ddEl = document.getElementById("mm-drawdown");
   const ddSub = document.getElementById("mm-drawdown-sub");
-  const dd = stats.max_drawdown || 0;
+  const dd = r.aktueller_drawdown !== undefined ? r.aktueller_drawdown : (stats.aktueller_drawdown||0);
+  const lim = r.limits || {};
+  const ddPause = lim.dd_pause_pct || 10, ddWarn = lim.dd_vorsicht_pct || 5;
   if (ddEl) {
-    ddEl.textContent = dd > 10 ? "KRITISCH" : dd > 5 ? "WARNUNG" : "OK";
-    ddEl.style.color = dd > 10 ? "var(--red)" : dd > 5 ? "var(--orange)" : "var(--green)";
+    ddEl.textContent = dd >= ddPause ? "PAUSE" : dd >= ddWarn ? "VORSICHT" : "OK";
+    ddEl.style.color = dd >= ddPause ? "var(--red)" : dd >= ddWarn ? "var(--orange)" : "var(--green)";
   }
-  if (ddSub) ddSub.textContent = `Max DD: ${dd.toFixed(2)}%`;
+  if (ddSub) ddSub.textContent = `Aktuell: ${dd.toFixed(2)}% · Max: ${(stats.max_drawdown||0).toFixed(2)}% · Hoch €${fmt(r.peak_kapital||startkapital)}`;
 
-  // Alert
   const alertEl = document.getElementById("mm-alert");
   if (alertEl) {
     if (mm.alert) {
       alertEl.textContent = mm.alert;
       alertEl.style.display = "block";
+      alertEl.style.color = mm.statusColor;
+      alertEl.style.borderColor = mm.statusColor + "33";
+      alertEl.style.background = mm.statusColor + "11";
     } else {
       alertEl.style.display = "none";
     }
@@ -591,7 +558,7 @@ async function ladeDemo(){
   document.getElementById("demo-badge").textContent=`💰 Demo: €${fmt(kapital)}`;
 
   // Money Management aktualisieren
-  updateMoneyManagement(stats, kapital, start);
+  updateMoneyManagement(stats, kapital, start, data.risiko);
 
   renderDemoStats(stats);
   renderChart(data.tages_snapshots||[]);
