@@ -1,8 +1,19 @@
 """
-demo_tracker.py (v3 - openpyxl only, NO pandas)
+demo_tracker.py (v4 - openpyxl only, NO pandas)
 ────────────────────────────────────────────────
 Liest/schreibt Demo-Kapital direkt aus Excel mit openpyxl.
-Keine pandas-Dependency mehr - schnellerer Start, schlankerer Container.
+
+NEU in v4:
+- Drawdown wird nach SCHLIESS-Reihenfolge berechnet (vorher: Zeilen-/
+  Eröffnungsreihenfolge -> falscher Wert) und es gibt zusätzlich den
+  AKTUELLEN Drawdown vom letzten Kapital-Hoch.
+- Kapitalverlauf (tages_snapshots) wird aus den geschlossenen Trades
+  erzeugt -> Chart im Dashboard ist nicht mehr leer.
+- get_risiko_status(): echter Portfolio-Schutz (Drawdown-Pause, Einsatz-
+  Reduktion, Exposure-Deckel, max. offene Trades, ein Trade pro Asset).
+- signal_oeffnen() lehnt Trades ab, die gegen diese Regeln verstoßen,
+  und gibt {"abgelehnt": grund} zurück.
+- Alle Zeitstempel in Wiener Zeit (config.jetzt()).
 """
 
 import os
@@ -15,6 +26,12 @@ from typing import Optional
 from openpyxl import load_workbook, Workbook
 
 from money_management import berechne_einsatz
+from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
+                    MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS,
+                    STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT,
+                    DD_PAUSE_PCT, DD_VORSICHT_PCT, DD_VORSICHT_FAKTOR,
+                    MAX_EXPOSURE_PCT, MAX_OFFENE_TRADES, EIN_TRADE_PRO_ASSET,
+                    jetzt)
 
 log = logging.getLogger(__name__)
 
@@ -29,13 +46,11 @@ def _synchronized(fn):
         with _excel_lock:
             return fn(*args, **kwargs)
     wrapper.__name__ = fn.__name__
+    wrapper.__doc__ = fn.__doc__
     return wrapper
 
+
 # ─── Konfiguration ──────────────────────────────────────────
-# Alle Werte kommen aus config.py - EINE Quelle der Wahrheit
-from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
-                    MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS)
-from config import STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT
 EXCEL_FILE     = Path(DATA_DIR) / "Trading_Tracker.xlsx"
 SHEET_NAME     = "Demo-Kapital"
 
@@ -153,6 +168,18 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _parse_zeit(wert) -> Optional[datetime]:
+    try:
+        s = str(wert or "").strip()
+        return datetime.fromisoformat(s) if s else None
+    except Exception:
+        return None
+
+
+def _norm_asset(a) -> str:
+    return str(a or "").strip().upper().replace(" ", "")
+
+
 def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
                   action: str, sl_pct: float, tp_pct: float) -> float:
     """
@@ -172,15 +199,241 @@ def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
     return round(max(-einsatz, min(pnl, max_gewinn)), 2)
 
 
+# ─── Kapitalkurve & Drawdown (nach Schließ-Reihenfolge!) ─────────────────────
+
+def _kapitalkurve(trades: list) -> list:
+    """
+    Kapitalverlauf in der Reihenfolge, in der die Trades GESCHLOSSEN wurden.
+    Vorher wurde in Zeilenreihenfolge (= Eröffnung) gerechnet -> der Drawdown
+    war falsch, weil ein Trade schon "verbucht" war, bevor er zu war.
+    Liefert Liste von {datum, kapital, trade_id, pnl}.
+    """
+    geschlossene = [t for t in trades if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
+    geschlossene.sort(key=lambda t: str(t.get("Geschlossen am", "")))
+
+    kurve = [{"datum": "Start", "kapital": round(STARTKAPITAL, 2), "trade_id": "", "pnl": 0.0}]
+    kapital = STARTKAPITAL
+    for t in geschlossene:
+        pnl = _safe_float(t.get("P&L", 0))
+        kapital += pnl
+        zeit = _parse_zeit(t.get("Geschlossen am"))
+        kurve.append({
+            "datum":    zeit.strftime("%d.%m.") if zeit else str(t.get("Datum", "")),
+            "kapital":  round(kapital, 2),
+            "trade_id": t.get("ID", ""),
+            "pnl":      round(pnl, 2),
+        })
+    return kurve
+
+
+def _drawdowns(kurve: list) -> tuple:
+    """(max_drawdown_pct, aktueller_drawdown_pct, peak_kapital)"""
+    max_dd = 0.0
+    peak = kurve[0]["kapital"] if kurve else STARTKAPITAL
+    for p in kurve:
+        k = p["kapital"]
+        if k > peak:
+            peak = k
+        dd = (peak - k) / peak * 100 if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+    letzte = kurve[-1]["kapital"] if kurve else STARTKAPITAL
+    aktuell = (peak - letzte) / peak * 100 if peak > 0 else 0.0
+    return round(max_dd, 2), round(aktuell, 2), round(peak, 2)
+
+
 # ─── Public API ─────────────────────────────────────────────
 
 @_synchronized
-def signal_oeffnen(signal: dict) -> dict:
-    """Öffnet einen neuen Demo-Trade und speichert in Excel."""
+def get_statistik() -> dict:
+    """Liest Statistik direkt aus Excel."""
     trades = _lade_trades()
 
-    stats = get_statistik()
+    if not trades:
+        leer = {
+            "startkapital": STARTKAPITAL,
+            "aktuelles_kapital": STARTKAPITAL,
+            "pnl_gesamt": 0.0,
+            "erstellt_am": jetzt().isoformat(),
+            "statistik": {
+                "gesamt_trades": 0, "gewonnen": 0, "verloren": 0, "offen": 0,
+                "gesamt_pnl": 0.0, "beste_trade": 0.0, "schlechtester_trade": 0.0,
+                "win_rate": 0.0, "roi": 0.0,
+                "max_drawdown": 0.0, "aktueller_drawdown": 0.0, "peak_kapital": STARTKAPITAL,
+                "offene_exposure": 0.0, "offene_exposure_pct": 0.0,
+            },
+            "tages_snapshots": [],
+            "offene_trades": [],
+            "letzte_trades": [],
+        }
+        leer["risiko"] = _risiko_aus_stats(leer)
+        return leer
+
+    offene = [t for t in trades if t.get("Status") == "offen"]
+    # Trades OHNE Einstiegspreis sind nicht auswertbar (entstanden z.B. bei einer
+    # Verbindungsstörung): sie haben P&L 0 und würden die Win-Rate verfälschen.
+    auswertbar = [t for t in trades if _safe_float(t.get("Entry-Price", 0)) > 0]
+
+    geschlossene = [t for t in auswertbar if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
+    gewonnen = sum(1 for t in auswertbar if t.get("Status") == "gewonnen")
+    verloren = sum(1 for t in auswertbar if t.get("Status") == "verloren")
+
+    gesamt_pnl = round(sum(_safe_float(t.get("P&L", 0)) for t in trades), 2)
+    aktuelles_kapital = round(STARTKAPITAL + gesamt_pnl, 2)
+
+    abgeschlossen = gewonnen + verloren
+    win_rate = round(gewonnen / abgeschlossen * 100, 1) if abgeschlossen > 0 else 0.0
+    roi = round((aktuelles_kapital - STARTKAPITAL) / STARTKAPITAL * 100, 2) if STARTKAPITAL > 0 else 0.0
+
+    beste_trade = 0.0
+    schlechtester_trade = 0.0
+    if geschlossene:
+        pnls = [_safe_float(t.get("P&L", 0)) for t in geschlossene]
+        beste_trade = round(max(pnls), 2)
+        schlechtester_trade = round(min(pnls), 2)
+
+    # Kapitalkurve + Drawdown nach Schließ-Reihenfolge
+    kurve = _kapitalkurve(trades)
+    max_drawdown, aktueller_drawdown, peak_kapital = _drawdowns(kurve)
+
+    # Offenes Risiko (Einsatz = max. Verlust pro Trade)
+    offene_exposure = round(sum(_safe_float(t.get("Einsatz", 0)) for t in offene), 2)
+    offene_exposure_pct = round(offene_exposure / aktuelles_kapital * 100, 2) if aktuelles_kapital > 0 else 0.0
+    offene_pro_asset = {}
+    for t in offene:
+        a = _norm_asset(t.get("Asset"))
+        offene_pro_asset[a] = offene_pro_asset.get(a, 0) + 1
+
+    letzte = sorted(
+        [t for t in trades if t.get("Status") != "offen"],
+        key=lambda t: str(t.get("Geschlossen am", "")),
+        reverse=True
+    )[:20]
+
+    stats = {
+        "startkapital": STARTKAPITAL,
+        "aktuelles_kapital": aktuelles_kapital,
+        "pnl_gesamt": gesamt_pnl,
+        "erstellt_am": jetzt().isoformat(),
+        "statistik": {
+            "gesamt_trades": len(auswertbar),
+            "gewonnen": gewonnen,
+            "verloren": verloren,
+            "offen": len(offene),
+            "gesamt_pnl": gesamt_pnl,
+            "beste_trade": beste_trade,
+            "schlechtester_trade": schlechtester_trade,
+            "win_rate": win_rate,
+            "roi": roi,
+            "max_drawdown": max_drawdown,
+            "aktueller_drawdown": aktueller_drawdown,
+            "peak_kapital": peak_kapital,
+            "offene_exposure": offene_exposure,
+            "offene_exposure_pct": offene_exposure_pct,
+            "offene_pro_asset": offene_pro_asset,
+        },
+        # Chart-Daten: ein Punkt pro geschlossenem Trade (Start + jeder Abschluss)
+        "tages_snapshots": [{"datum": p["datum"], "kapital": p["kapital"]} for p in kurve],
+        "kapitalverlauf": kurve,
+        "offene_trades": offene,
+        "letzte_trades": letzte,
+    }
+    stats["risiko"] = _risiko_aus_stats(stats)
+    return stats
+
+
+def _risiko_aus_stats(stats: dict) -> dict:
+    """
+    Portfolio-Schutz. Entscheidet, ob neue Trades erlaubt sind und mit welchem
+    Einsatz-Faktor. Das Dashboard zeigt NUR noch an, was hier entschieden wird.
+    """
+    s = stats["statistik"]
+    dd      = _safe_float(s.get("aktueller_drawdown", 0))
+    expo    = _safe_float(s.get("offene_exposure_pct", 0))
+    offen   = int(s.get("offen", 0))
+    gruende = []
+    faktor  = 1.0
+    stufe   = "NORMAL"
+
+    if dd >= DD_PAUSE_PCT:
+        stufe = "PAUSE"
+        faktor = 0.0
+        gruende.append(f"Drawdown {dd:.1f}% ≥ {DD_PAUSE_PCT:.0f}% → keine neuen Trades bis Erholung")
+    elif dd >= DD_VORSICHT_PCT:
+        stufe = "VORSICHT"
+        faktor = DD_VORSICHT_FAKTOR
+        gruende.append(f"Drawdown {dd:.1f}% ≥ {DD_VORSICHT_PCT:.0f}% → Einsatz × {DD_VORSICHT_FAKTOR:g}")
+
+    if expo >= MAX_EXPOSURE_PCT:
+        if stufe != "PAUSE":
+            stufe = "EXPOSURE_VOLL"
+        faktor = 0.0
+        gruende.append(f"Offenes Risiko {expo:.1f}% ≥ {MAX_EXPOSURE_PCT:.0f}% des Kapitals")
+    if offen >= MAX_OFFENE_TRADES:
+        if stufe not in ("PAUSE", "EXPOSURE_VOLL"):
+            stufe = "EXPOSURE_VOLL"
+        faktor = 0.0
+        gruende.append(f"{offen} offene Trades ≥ Limit {MAX_OFFENE_TRADES}")
+
+    return {
+        "stufe":               stufe,
+        "neue_trades_erlaubt": faktor > 0,
+        "einsatz_faktor":      faktor,
+        "aktueller_drawdown":  dd,
+        "max_drawdown":        _safe_float(s.get("max_drawdown", 0)),
+        "peak_kapital":        _safe_float(s.get("peak_kapital", STARTKAPITAL)),
+        "offene_exposure_pct": expo,
+        "offene_exposure":     _safe_float(s.get("offene_exposure", 0)),
+        "offen":               offen,
+        "gruende":             gruende,
+        "limits": {
+            "dd_pause_pct":        DD_PAUSE_PCT,
+            "dd_vorsicht_pct":     DD_VORSICHT_PCT,
+            "dd_vorsicht_faktor":  DD_VORSICHT_FAKTOR,
+            "max_exposure_pct":    MAX_EXPOSURE_PCT,
+            "max_offene_trades":   MAX_OFFENE_TRADES,
+            "ein_trade_pro_asset": EIN_TRADE_PRO_ASSET,
+        },
+    }
+
+
+@_synchronized
+def get_risiko_status() -> dict:
+    """Aktueller Portfolio-Schutz-Status (für Pipeline, /status, Dashboard)."""
+    return get_statistik()["risiko"]
+
+
+@_synchronized
+def signal_oeffnen(signal: dict, einsatz_faktor: float = 1.0) -> dict:
+    """
+    Öffnet einen neuen Demo-Trade und speichert in Excel.
+    Gibt bei Ablehnung {"abgelehnt": "<Grund>", ...} zurück (KEIN Trade).
+    """
+    trades = _lade_trades()
+    stats  = get_statistik()
     kapital = stats["aktuelles_kapital"]
+    risiko  = stats["risiko"]
+    asset   = str(signal.get("asset", "")).strip()
+
+    # ── Portfolio-Schutz (Backend, nicht nur Anzeige) ─────────────────
+    if not risiko["neue_trades_erlaubt"]:
+        grund = "; ".join(risiko["gruende"]) or risiko["stufe"]
+        log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
+        return {"abgelehnt": grund, "asset": asset, "stufe": risiko["stufe"]}
+
+    if EIN_TRADE_PRO_ASSET:
+        offene_gleich = [t for t in trades if t.get("Status") == "offen"
+                         and _norm_asset(t.get("Asset")) == _norm_asset(asset)]
+        if offene_gleich:
+            ids = ", ".join(str(t.get("ID")) for t in offene_gleich)
+            richtung = "/".join(sorted({str(t.get("Richtung", "")) for t in offene_gleich}))
+            grund = f"{asset} bereits offen ({ids}, {richtung})"
+            log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
+            return {"abgelehnt": grund, "asset": asset, "stufe": "ASSET_OFFEN"}
+
+    faktor = max(0.0, min(1.0, float(einsatz_faktor))) * float(risiko["einsatz_faktor"])
+    if faktor <= 0:
+        return {"abgelehnt": "Einsatz-Faktor 0", "asset": asset, "stufe": risiko["stufe"]}
+    # ─────────────────────────────────────────────────────────────────
 
     sl_pct = _validiere_prozent(signal.get("stopLoss"), SL_PROZENT)
     tp_pct = _validiere_prozent(signal.get("takeProfit"), TP_PROZENT)
@@ -201,38 +454,52 @@ def signal_oeffnen(signal: dict) -> dict:
         },
         params=signal.get("mm_params"),
     )
-    einsatz          = mm["einsatz"]
+    einsatz          = round(float(mm["einsatz"]) * faktor, 2)
     mm_modus_genutzt = mm["modus"]
     mm_begruendung   = mm["begruendung"]
+    if faktor < 1.0:
+        mm_begruendung += f" | Schutz ×{faktor:g}"
+
+    # Exposure-Deckel: passt der neue Einsatz noch unter das Limit?
+    frei = kapital * MAX_EXPOSURE_PCT / 100 - risiko["offene_exposure"]
+    if einsatz > frei:
+        if frei < 1.0:
+            grund = f"Exposure-Limit erreicht ({risiko['offene_exposure_pct']:.1f}% offen)"
+            log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
+            return {"abgelehnt": grund, "asset": asset, "stufe": "EXPOSURE_VOLL"}
+        log.info(f"🛡️ Einsatz {asset} von €{einsatz:.2f} auf €{frei:.2f} gekürzt (Exposure-Limit)")
+        einsatz = round(frei, 2)
+        mm_begruendung += f" | auf €{einsatz:.2f} gekürzt (Exposure)"
+    if einsatz < 1.0:
+        return {"abgelehnt": "Einsatz unter €1", "asset": asset, "stufe": risiko["stufe"]}
     # ─────────────────────────────────────────────────────────────────
 
-    # Risikobasiert: Einsatz = maximaler Verlust, wenn SL trifft.
-    # SL Absolut = voller Einsatz (Verlust), TP Absolut = Einsatz × R:R (Zielgewinn).
     rr         = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
     sl_absolut = round(einsatz, 2)
     tp_absolut = round(einsatz * rr, 2)
 
     trade_id = f"T{len(trades) + 1:04d}"
+    now = jetzt()
 
     neue_zeile = {
-        "Datum": datetime.now().strftime("%d.%m.%Y"),
-        "Uhrzeit": datetime.now().strftime("%H:%M:%S"),
+        "Datum": now.strftime("%d.%m.%Y"),
+        "Uhrzeit": now.strftime("%H:%M:%S"),
         "ID": trade_id,
-        "Asset": signal.get("asset", ""),
-        "Action": signal.get("action", "").upper(),
-        "Richtung": signal.get("direction", "").upper(),
-        "Konfidenz": int(signal.get("confidence", 0)),
+        "Asset": asset,
+        "Action": str(signal.get("action", "")).upper(),
+        "Richtung": str(signal.get("direction", "")).upper(),
+        "Konfidenz": int(_safe_float(signal.get("confidence", 0))),
         "Einsatz": einsatz,
         "SL %": sl_pct,
         "TP %": tp_pct,
         "SL Absolut": sl_absolut,
         "TP Absolut": tp_absolut,
-        "R:R": round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0,
+        "R:R": rr,
         "Entry-Price": _safe_float(signal.get("entry_price", 0)),
         "Aktuell": 0.0,
         "P&L": 0.0,
         "Status": "offen",
-        "Geöffnet am": datetime.now().isoformat(),
+        "Geöffnet am": now.isoformat(),
         "Geschlossen am": "",
         "Zusammenfassung": signal.get("summary", ""),
         "Score": signal.get("sessionScore", 0),
@@ -288,7 +555,7 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float]
 
     trades[idx]["Status"] = ergebnis
     trades[idx]["P&L"] = round(pnl, 2)
-    trades[idx]["Geschlossen am"] = datetime.now().isoformat()
+    trades[idx]["Geschlossen am"] = jetzt().isoformat()
 
     _speichere_trades(trades)
 
@@ -308,105 +575,12 @@ def get_offene_trades() -> list:
 
 
 @_synchronized
-def get_statistik() -> dict:
-    """Liest Statistik direkt aus Excel."""
-    trades = _lade_trades()
-
-    if not trades:
-        return {
-            "startkapital": STARTKAPITAL,
-            "aktuelles_kapital": STARTKAPITAL,
-            "pnl_gesamt": 0.0,
-            "erstellt_am": datetime.now().isoformat(),
-            "statistik": {
-                "gesamt_trades": 0,
-                "gewonnen": 0,
-                "verloren": 0,
-                "offen": 0,
-                "gesamt_pnl": 0.0,
-                "beste_trade": 0.0,
-                "schlechtester_trade": 0.0,
-                "win_rate": 0.0,
-                "roi": 0.0,
-                "max_drawdown": 0.0,
-            },
-            "tages_snapshots": [],
-            "offene_trades": [],
-            "letzte_trades": [],
-        }
-
-    offene = [t for t in trades if t.get("Status") == "offen"]
-    # Trades OHNE Einstiegspreis sind nicht auswertbar (entstanden z.B. bei einer
-    # Verbindungsstörung): sie haben P&L 0 und würden die Win-Rate verfälschen.
-    # Sie werden hier rückwirkend aus der Statistik genommen, egal welchen Status
-    # sie tragen - das wirkt auch für Alt-Trades, die noch "verloren" heißen.
-    auswertbar = [t for t in trades if _safe_float(t.get("Entry-Price", 0)) > 0]
-
-    geschlossene = [t for t in auswertbar if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
-    gewonnen = sum(1 for t in auswertbar if t.get("Status") == "gewonnen")
-    verloren = sum(1 for t in auswertbar if t.get("Status") == "verloren")
-
-    gesamt_pnl = round(sum(_safe_float(t.get("P&L", 0)) for t in trades), 2)
-    aktuelles_kapital = round(STARTKAPITAL + gesamt_pnl, 2)
-
-    abgeschlossen = gewonnen + verloren
-    win_rate = round(gewonnen / abgeschlossen * 100, 1) if abgeschlossen > 0 else 0.0
-
-    roi = round((aktuelles_kapital - STARTKAPITAL) / STARTKAPITAL * 100, 2) if STARTKAPITAL > 0 else 0.0
-
-    beste_trade = 0.0
-    schlechtester_trade = 0.0
-    if geschlossene:
-        pnls = [_safe_float(t.get("P&L", 0)) for t in geschlossene]
-        beste_trade = round(max(pnls), 2)
-        schlechtester_trade = round(min(pnls), 2)
-
-    # Max Drawdown
-    max_drawdown = 0.0
-    kapital_progression = [STARTKAPITAL]
-    for t in trades:
-        kapital_progression.append(kapital_progression[-1] + _safe_float(t.get("P&L", 0)))
-    peak = max(kapital_progression)
-    for k in kapital_progression:
-        drawdown = (peak - k) / peak * 100 if peak > 0 else 0
-        max_drawdown = max(max_drawdown, drawdown)
-    max_drawdown = round(max_drawdown, 2)
-
-    letzte = sorted(
-        [t for t in trades if t.get("Status") != "offen"],
-        key=lambda t: str(t.get("Geschlossen am", "")),
-        reverse=True
-    )[:20]
-
-    return {
-        "startkapital": STARTKAPITAL,
-        "aktuelles_kapital": aktuelles_kapital,
-        "pnl_gesamt": gesamt_pnl,
-        "erstellt_am": datetime.now().isoformat(),
-        "statistik": {
-            "gesamt_trades": len(auswertbar),
-            "gewonnen": gewonnen,
-            "verloren": verloren,
-            "offen": len(offene),
-            "gesamt_pnl": gesamt_pnl,
-            "beste_trade": beste_trade,
-            "schlechtester_trade": schlechtester_trade,
-            "win_rate": win_rate,
-            "roi": roi,
-            "max_drawdown": max_drawdown,
-        },
-        "tages_snapshots": [],
-        "offene_trades": offene,
-        "letzte_trades": letzte,
-    }
-
-
-@_synchronized
 def tages_snapshot():
-    """Speichert täglichen Kapital-Snapshot."""
+    """Loggt täglichen Kapital-Snapshot (Kurve kommt aus den Trades selbst)."""
     stats = get_statistik()
-    heute = datetime.now().strftime("%d.%m.%Y")
-    log.info(f"📊 Snapshot: {heute} | €{stats['aktuelles_kapital']:.2f}")
+    r = stats["risiko"]
+    log.info(f"📊 Snapshot: {jetzt().strftime('%d.%m.%Y')} | €{stats['aktuelles_kapital']:.2f} "
+             f"| DD {r['aktueller_drawdown']:.1f}% | offen {r['offene_exposure_pct']:.1f}% | {r['stufe']}")
 
 
 @_synchronized
@@ -421,6 +595,8 @@ def generiere_tages_report() -> str:
     offen = stats["statistik"]["offen"]
     gewon = stats["statistik"]["gewonnen"]
     verl = stats["statistik"]["verloren"]
+    r = stats["risiko"]
+    schutz = "🟢 normal" if r["stufe"] == "NORMAL" else f"🛡️ {r['stufe']}"
 
     return (
         f"📊 *TRADING DEMO - TAGESREPORT*\n"
@@ -431,8 +607,10 @@ def generiere_tages_report() -> str:
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 Win Rate: *{wr:.1f}%*\n"
         f"✅ Gewonnen: *{gewon}* | ❌ Verloren: *{verl}*\n"
-        f"🔄 Offen: *{offen}*\n"
+        f"🔄 Offen: *{offen}* (€{r['offene_exposure']:.0f} = {r['offene_exposure_pct']:.1f}%)\n"
+        f"📉 Drawdown: aktuell {r['aktueller_drawdown']:.1f}% | max {r['max_drawdown']:.1f}%\n"
+        f"🛡️ Schutz: {schutz}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📈 Startkapital: €{start:.2f}\n"
-        f"🤖 _Trading Multi-Agent v3.0_"
+        f"🤖 _Trading Multi-Agent v3.1_"
     )
