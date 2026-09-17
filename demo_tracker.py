@@ -14,6 +14,8 @@ NEU in v4:
 - signal_oeffnen() lehnt Trades ab, die gegen diese Regeln verstoßen,
   und gibt {"abgelehnt": grund} zurück.
 - Alle Zeitstempel in Wiener Zeit (config.jetzt()).
+- Break-even-Stop (Spalte "BE-Seit") + Status "breakeven" (P&L 0).
+- Trades können zum Marktpreis geschlossen werden (main.py /demo/trade/{id}/schliessen?ergebnis=markt).
 """
 
 import os
@@ -61,6 +63,7 @@ COLUMNS = [
     "R:R", "Entry-Price", "Aktuell", "P&L", "Status",
     "Geöffnet am", "Geschlossen am", "Zusammenfassung", "Score", "Strategie",
     "MM-Modus", "MM-Begründung",
+    "BE-Seit",   # Zeitpunkt, ab dem der Break-even-Stop aktiv ist ("" = nicht aktiv)
 ]
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -255,7 +258,7 @@ def get_statistik() -> dict:
             "pnl_gesamt": 0.0,
             "erstellt_am": jetzt().isoformat(),
             "statistik": {
-                "gesamt_trades": 0, "gewonnen": 0, "verloren": 0, "offen": 0,
+                "gesamt_trades": 0, "gewonnen": 0, "verloren": 0, "breakeven": 0, "offen": 0,
                 "gesamt_pnl": 0.0, "beste_trade": 0.0, "schlechtester_trade": 0.0,
                 "win_rate": 0.0, "roi": 0.0,
                 "max_drawdown": 0.0, "aktueller_drawdown": 0.0, "peak_kapital": STARTKAPITAL,
@@ -276,6 +279,7 @@ def get_statistik() -> dict:
     geschlossene = [t for t in auswertbar if t.get("Status") in ("gewonnen", "verloren", "breakeven")]
     gewonnen = sum(1 for t in auswertbar if t.get("Status") == "gewonnen")
     verloren = sum(1 for t in auswertbar if t.get("Status") == "verloren")
+    breakeven = sum(1 for t in auswertbar if t.get("Status") == "breakeven")
 
     gesamt_pnl = round(sum(_safe_float(t.get("P&L", 0)) for t in trades), 2)
     aktuelles_kapital = round(STARTKAPITAL + gesamt_pnl, 2)
@@ -318,6 +322,7 @@ def get_statistik() -> dict:
             "gesamt_trades": len(auswertbar),
             "gewonnen": gewonnen,
             "verloren": verloren,
+            "breakeven": breakeven,
             "offen": len(offene),
             "gesamt_pnl": gesamt_pnl,
             "beste_trade": beste_trade,
@@ -550,7 +555,7 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float]
         pnl = _safe_float(trade.get("TP Absolut", 0))
     elif ergebnis == "verloren":
         pnl = -_safe_float(trade.get("SL Absolut", 0))
-    else:
+    else:                       # "breakeven", "abgebrochen"
         pnl = 0.0
 
     trades[idx]["Status"] = ergebnis
@@ -559,12 +564,26 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float]
 
     _speichere_trades(trades)
 
-    log.info(
-        f"{'✅' if ergebnis == 'gewonnen' else '❌'} Trade {trade_id} | "
-        f"{ergebnis.upper()} | P&L: {'+' if pnl >= 0 else ''}€{pnl:.2f}"
-    )
+    emoji = {"gewonnen": "✅", "verloren": "❌", "breakeven": "⚖️"}.get(ergebnis, "🗑️")
+    log.info(f"{emoji} Trade {trade_id} | {ergebnis.upper()} | P&L: {'+' if pnl >= 0 else ''}€{pnl:.2f}")
 
     return trades[idx]
+
+
+@_synchronized
+def breakeven_aktivieren(trade_id: str) -> dict:
+    """Zieht den Stop eines offenen Trades auf den Entry (Break-even-Stop)."""
+    trades = _lade_trades()
+    for t in trades:
+        if t.get("ID") == trade_id and t.get("Status") == "offen":
+            if str(t.get("BE-Seit") or "").strip():
+                return t
+            t["BE-Seit"] = jetzt().isoformat()
+            _speichere_trades(trades)
+            log.info(f"⚖️ Break-even-Stop aktiv: {trade_id} | {t.get('Asset')} | Entry {t.get('Entry-Price')}")
+            return t
+    log.warning(f"Break-even: Trade {trade_id} nicht gefunden oder nicht offen")
+    return {}
 
 
 @_synchronized
@@ -606,7 +625,7 @@ def generiere_tages_report() -> str:
         f"({'+' if roi >= 0 else ''}{roi:.1f}%)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🎯 Win Rate: *{wr:.1f}%*\n"
-        f"✅ Gewonnen: *{gewon}* | ❌ Verloren: *{verl}*\n"
+        f"✅ Gewonnen: *{gewon}* | ❌ Verloren: *{verl}* | ⚖️ BE: {stats['statistik'].get('breakeven', 0)}\n"
         f"🔄 Offen: *{offen}* (€{r['offene_exposure']:.0f} = {r['offene_exposure_pct']:.1f}%)\n"
         f"📉 Drawdown: aktuell {r['aktueller_drawdown']:.1f}% | max {r['max_drawdown']:.1f}%\n"
         f"🛡️ Schutz: {schutz}\n"
