@@ -7,10 +7,12 @@ mit UNTERSCHIEDLICHEN Defaults (z.B. MAX_RISK_PCT 5 vs 2) — fehlte
 eine Variable, rechneten die Module verschieden.
 
 Nutzung:
-    from config import MAX_RISK_PCT, STOP_LOSS_PCT, DATA_DIR
+    from config import MAX_RISK_PCT, STOP_LOSS_PCT, DATA_DIR, jetzt
 """
 
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 def _f(name: str, default: float) -> float:
@@ -42,6 +44,19 @@ def _s(name: str, default: str) -> str:
     return v if v else default
 
 
+# ─── Zeit ────────────────────────────────────────────────────
+# Railway läuft in UTC. Bisher standen im Excel UTC-Zeiten (05:03),
+# während der Zeitplan auf Wien (07:00) lief. Ab jetzt rechnet ALLES
+# in Wiener Zeit: jetzt() liefert eine "naive" Wien-Zeit, damit die
+# bestehenden ISO-Strings im Excel weiter vergleichbar bleiben.
+ZEITZONE = _s("ZEITZONE", "Europe/Vienna")
+
+
+def jetzt() -> datetime:
+    """Aktuelle Zeit in Wiener Zeit (ohne tzinfo, für Excel/Vergleiche)."""
+    return datetime.now(ZoneInfo(ZEITZONE)).replace(tzinfo=None)
+
+
 # ─── Speicherort ─────────────────────────────────────────────
 DATA_DIR          = _s("DATA_DIR", "/app/data")
 
@@ -51,6 +66,24 @@ STOP_LOSS_PCT     = _f("STOP_LOSS_PCT", 1.5)
 TAKE_PROFIT_PCT   = _f("TAKE_PROFIT_PCT", 3.0)
 POSITION_SIZE     = _f("POSITION_SIZE_EUR", 1000.0)
 MIN_CONFIDENCE    = _i("MIN_CONFIDENCE", 70)
+# Max. Haltedauer, danach wird zum Marktpreis geschlossen
+MAX_TRADE_TAGE    = _f("MAX_TRADE_TAGE", 14.0)
+
+# ─── Portfolio-Schutz (NEU, greift im Backend) ───────────────
+# Drawdown wird vom letzten Kapital-Hoch gemessen (AKTUELLER DD, nicht
+# der historische Max-DD). Über DD_PAUSE_PCT werden KEINE neuen Trades
+# geöffnet, zwischen DD_VORSICHT_PCT und DD_PAUSE_PCT wird der Einsatz
+# mit DD_VORSICHT_FAKTOR multipliziert (0.5 = halbiert).
+DD_PAUSE_PCT        = _f("DD_PAUSE_PCT", 10.0)
+DD_VORSICHT_PCT     = _f("DD_VORSICHT_PCT", 5.0)
+DD_VORSICHT_FAKTOR  = _f("DD_VORSICHT_FAKTOR", 0.5)
+# Summe aller offenen Einsätze darf diesen Anteil des Kapitals nicht
+# überschreiten (vorher: unbegrenzt, real waren 33% offen).
+MAX_EXPOSURE_PCT    = _f("MAX_EXPOSURE_PCT", 15.0)
+# Harte Obergrenze für gleichzeitig offene Demo-Trades
+MAX_OFFENE_TRADES   = _i("MAX_OFFENE_TRADES", 6)
+# Nur ein offener Trade pro Asset (verhindert Long UND Short gleichzeitig)
+EIN_TRADE_PRO_ASSET = _b("EIN_TRADE_PRO_ASSET", True)
 
 # ─── Demo-Simulation ─────────────────────────────────────────
 DEMO_STARTKAPITAL = _f("DEMO_STARTKAPITAL", 1000.0)
