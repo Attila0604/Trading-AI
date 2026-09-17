@@ -1,6 +1,6 @@
-# Trading Multi-Agent v3.0 🤖📈
+# Trading Multi-Agent v3.1 🤖📈
 
-KI-gestütztes Trading-System mit 7 Claude-Agenten, Capital.com API-Integration und WhatsApp-Benachrichtigungen.
+KI-gestütztes Trading-System mit 6 Claude-Agenten, Capital.com API-Integration und WhatsApp-Benachrichtigungen.
 
 ---
 
@@ -178,3 +178,19 @@ Wird automatisch in `/app/data/Trading_Tracker.xlsx` gespeichert.
 - Capital.com API Docs: https://open-api.capital.com
 - CallMeBot: https://www.callmebot.com/blog/free-api-whatsapp-messages/
 - Railway Docs: https://docs.railway.app
+
+## Portfolio-Schutz (v3.1, Backend)
+
+Greift in `demo_tracker.get_risiko_status()` **vor** jedem Demo-Trade – nicht nur im Dashboard:
+
+| Env-Variable | Default | Wirkung |
+|---|---|---|
+| `DD_PAUSE_PCT` | 10 | Aktueller Drawdown vom Kapital-Hoch ≥ X % → keine neuen Trades |
+| `DD_VORSICHT_PCT` | 5 | Drawdown ≥ X % → Einsatz × `DD_VORSICHT_FAKTOR` |
+| `DD_VORSICHT_FAKTOR` | 0.5 | Einsatz-Faktor in der Vorsicht-Zone |
+| `MAX_EXPOSURE_PCT` | 15 | Summe offener Einsätze max. X % des Kapitals |
+| `MAX_OFFENE_TRADES` | 6 | Max. gleichzeitig offene Demo-Trades |
+| `EIN_TRADE_PRO_ASSET` | true | Kein zweiter Trade (auch nicht gegenläufig) im selben Asset |
+| `ZEITZONE` | Europe/Vienna | Alle Zeitstempel (Excel, Timeout, Logs) |
+
+Status: `GET /demo/risiko`, außerdem in `/status` und `/selftest`.
