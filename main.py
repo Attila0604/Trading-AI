@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio, os, sys, json, logging
 from datetime import datetime
 
-from config import jetzt
+from config import jetzt, BREAKEVEN_NACH_TAGEN
 
 from agents import run_pipeline
 from capital_client import CapitalClient
@@ -18,7 +18,7 @@ from whatsapp import send_whatsapp
 from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
     get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis,
-    get_risiko_status,
+    get_risiko_status, breakeven_aktivieren,
 )
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi, optimiere_parameter
@@ -215,6 +215,7 @@ async def _check_trade_results(offene: list):
 
             ergebnis     = None
             pnl_override = None
+            kerzen       = []
 
             if entry_price > 0:
                 if action in ("buy", "long"):
@@ -282,7 +283,59 @@ async def _check_trade_results(offene: list):
                 log.info(f"🗑️ {trade_id} ohne Entry-Price → abgebrochen (zählt nicht in der Statistik)")
                 continue
 
-            # Timeout: nach 48h zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
+            # ── Break-even-Stop ───────────────────────────────────────────────
+            # Phase 2: BE ist aktiv → Kurs zurück am Entry = mit P&L 0 schließen
+            be_seit = None
+            try:
+                be_s = str(trade.get("BE-Seit") or "").strip()
+                be_seit = datetime.fromisoformat(be_s) if be_s else None
+            except Exception:
+                be_seit = None
+
+            if ergebnis is None and entry_price > 0 and be_seit is not None:
+                be_hit = False
+                for c in kerzen:
+                    try:
+                        ct = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                    except Exception:
+                        continue
+                    if ct < be_seit:
+                        continue
+                    hi, lo = c.get("high"), c.get("low")
+                    if hi is None or lo is None:
+                        continue
+                    if action in ("buy", "long") and lo <= entry_price:
+                        be_hit = True; break
+                    if action not in ("buy", "long") and hi >= entry_price:
+                        be_hit = True; break
+                if not be_hit:
+                    if action in ("buy", "long") and current_price <= entry_price:
+                        be_hit = True
+                    if action not in ("buy", "long") and current_price >= entry_price:
+                        be_hit = True
+                if be_hit:
+                    ergebnis = "breakeven"
+                    pnl_override = 0.0
+                    log.info(f"⚖️ Break-even getroffen: {trade_id} | {asset} | Entry {entry_price:.5f}")
+
+            # Phase 1: nach X Tagen im Plus → Stop auf Entry ziehen
+            if (ergebnis is None and entry_price > 0 and be_seit is None
+                    and BREAKEVEN_NACH_TAGEN > 0 and alter_std > BREAKEVEN_NACH_TAGEN * 24):
+                unreal = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
+                if unreal > 0:
+                    breakeven_aktivieren(trade_id)
+                    log.info(f"⚖️ {trade_id} nach {alter_std/24:.1f} Tagen im Plus (€{unreal:.2f}) → Break-even-Stop gesetzt")
+                    send_whatsapp(
+                        f"⚖️ *Break-even-Stop gesetzt*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 {trade_id} | {asset} | {action.upper()}\n"
+                        f"📈 Entry: {entry_price:.5f} | Aktuell: {current_price:.5f}\n"
+                        f"💰 Unrealisiert: +€{unreal:.2f} nach {alter_std/24:.1f} Tagen\n"
+                        f"🔒 Stop jetzt am Entry - schlimmstenfalls ±0"
+                    )
+            # ─────────────────────────────────────────────────────────────────
+
+            # Timeout: nach MAX_TRADE_TAGE zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
             if ergebnis is None and alter_std > MAX_TRADE_TAGE * 24:
                 pnl_override = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
                 ergebnis = "gewonnen" if pnl_override > 0 else "verloren"
@@ -292,7 +345,7 @@ async def _check_trade_results(offene: list):
                 geschlossen = trade_schliessen(trade_id, ergebnis, pnl_override)
                 stats       = get_statistik()
                 pnl_wert    = float(geschlossen.get("P&L", 0) or 0)
-                emoji = "✅" if ergebnis == "gewonnen" else "❌"
+                emoji = {"gewonnen": "✅", "verloren": "❌", "breakeven": "⚖️"}.get(ergebnis, "🗑️")
                 send_whatsapp(
                     f"{emoji} *Demo-Trade {ergebnis.upper()}*\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -797,6 +850,8 @@ async def selftest():
     jobs = scheduler.get_jobs()
     add("Zeitpläne", len(jobs) >= 3, f"{len(jobs)} Jobs aktiv")
     add("Max. Haltedauer", True, f"{MAX_TRADE_TAGE:.0f} Tage (Backtest kennt keine Begrenzung)")
+    add("Break-even-Stop", True,
+        f"nach {BREAKEVEN_NACH_TAGEN:.0f} Tagen im Plus → Stop auf Entry" if BREAKEVEN_NACH_TAGEN > 0 else "AUS")
 
     fehler   = sum(1 for c in checks if c["status"] == "fehler")
     warnungen = sum(1 for c in checks if c["status"] == "warn")
@@ -949,10 +1004,70 @@ async def demo_report_senden(_auth: bool = Depends(pruefe_token)):
     send_whatsapp(report)
     return {"status": "gesendet", "report": report}
 
+async def _markt_bewertung(trade: dict) -> dict:
+    """Aktueller Kurs + unrealisierter P&L eines offenen Demo-Trades."""
+    asset       = str(trade.get("Asset", "")).strip()
+    entry_price = float(trade.get("Entry-Price", 0) or 0)
+    action      = str(trade.get("Action", "buy")).lower()
+    sl_pct      = float(trade.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT)
+    tp_pct      = float(trade.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT)
+    einsatz     = float(trade.get("Einsatz", 0) or 0)
+    if entry_price <= 0:
+        raise HTTPException(status_code=400, detail="Trade hat keinen Entry-Preis")
+    if not capital.is_connected():
+        await capital.connect()
+    price_data = await capital.get_prices(asset_to_epic(asset))
+    # Schließen = Gegenseite: Long wird zum Bid verkauft, Short zum Ask gedeckt
+    if action in ("buy", "long"):
+        preis = price_data.get("bid") or price_data.get("ask")
+    else:
+        preis = price_data.get("ask") or price_data.get("bid")
+    if not preis:
+        raise HTTPException(status_code=503, detail=f"Kein Kurs für {asset}")
+    preis = float(preis)
+    pnl   = pnl_aus_preis(einsatz, entry_price, preis, action, sl_pct, tp_pct)
+    return {"trade_id": trade.get("ID"), "asset": asset, "action": action.upper(),
+            "entry": entry_price, "aktuell": preis, "pnl": pnl,
+            "einsatz": einsatz, "be_aktiv": bool(str(trade.get("BE-Seit") or "").strip())}
+
+
+@app.get("/demo/trade/{trade_id}/markt")
+async def demo_trade_markt(trade_id: str):
+    """Vorschau: was würde ein Schließen zum Marktpreis jetzt bringen?"""
+    trade = next((t for t in get_offene_trades() if t.get("ID") == trade_id), None)
+    if not trade:
+        raise HTTPException(status_code=404, detail=f"Offener Trade {trade_id} nicht gefunden")
+    return await _markt_bewertung(trade)
+
+
 @app.post("/demo/trade/{trade_id}/schliessen")
-async def demo_trade_schliessen(trade_id: str, ergebnis: str = "verloren", _auth: bool = Depends(pruefe_token)):
+async def demo_trade_schliessen(trade_id: str, ergebnis: str = "markt", _auth: bool = Depends(pruefe_token)):
+    """
+    ergebnis = markt     → zum aktuellen Kurs schließen (echter P&L, Default)
+               gewonnen  → voller TP-Betrag
+               verloren  → voller SL-Betrag
+               breakeven → P&L 0
+    """
+    if ergebnis not in ("markt", "gewonnen", "verloren", "breakeven"):
+        raise HTTPException(status_code=400, detail="ergebnis muss markt|gewonnen|verloren|breakeven sein")
+    if ergebnis == "markt":
+        trade = next((t for t in get_offene_trades() if t.get("ID") == trade_id), None)
+        if not trade:
+            raise HTTPException(status_code=404, detail=f"Offener Trade {trade_id} nicht gefunden")
+        bewertung = await _markt_bewertung(trade)
+        pnl = bewertung["pnl"]
+        status = "gewonnen" if pnl > 0 else ("verloren" if pnl < 0 else "breakeven")
+        geschlossen = trade_schliessen(trade_id, status, pnl_override=pnl)
+        log.info(f"💱 {trade_id} manuell zum Marktpreis geschlossen | {bewertung['aktuell']} | P&L €{pnl:.2f}")
+        send_whatsapp(
+            f"💱 *Demo-Trade manuell geschlossen*\n"
+            f"📊 {trade_id} | {bewertung['asset']} | {bewertung['action']}\n"
+            f"📈 Entry {bewertung['entry']:.5f} → {bewertung['aktuell']:.5f}\n"
+            f"💰 P&L: {'+' if pnl >= 0 else ''}€{pnl:.2f}"
+        )
+        return {"status": "geschlossen", "ergebnis": status, "bewertung": bewertung, "trade": geschlossen}
     trade = trade_schliessen(trade_id, ergebnis)
-    return {"status": "geschlossen", "trade": trade}
+    return {"status": "geschlossen", "ergebnis": ergebnis, "trade": trade}
 
 @app.get("/demo/trades/offen")
 async def demo_trades_offen():
