@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.0 - Update 11.04.2026
+# Trading Multi-Agent v3.1 - Update 17.09.2026 (Portfolio-Schutz im Backend)
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -6,8 +6,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from contextlib import asynccontextmanager
-import asyncio, os, json, logging
+import asyncio, os, sys, json, logging
 from datetime import datetime
+
+from config import jetzt
 
 from agents import run_pipeline
 from capital_client import CapitalClient
@@ -15,13 +17,17 @@ from excel_tracker import ExcelTracker
 from whatsapp import send_whatsapp
 from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
-    get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis
+    get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis,
+    get_risiko_status,
 )
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi, optimiere_parameter
 from indicators import calculate_all_indicators
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# stream=sys.stdout: vorher ging alles auf stderr und Railway markierte JEDE
+# Zeile als "error" (943 von 1001 Log-Zeilen). Jetzt nur echte Fehler rot.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
+                    stream=sys.stdout, force=True)
 log = logging.getLogger(__name__)
 
 # --- HIER WURDE DER CODE GEHÄRTET (Assets) ---
@@ -129,7 +135,7 @@ scheduler = BackgroundScheduler(timezone="Europe/Vienna")
 # ── Wochenende Check ──────────────────────────────────────────────────────────
 def ist_wochenende() -> bool:
     """Samstag=5, Sonntag=6"""
-    return datetime.now().weekday() >= 5
+    return jetzt().weekday() >= 5
 
 def asset_handelbar(asset: str) -> bool:
     """Prüft ob ein Asset aktuell handelbar ist."""
@@ -143,8 +149,8 @@ def asset_handelbar(asset: str) -> bool:
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 def morgen_analyse_job():
-    log.info(f"🌅 Morgen-Analyse | {datetime.now().strftime('%d.%m.%Y %H:%M')}")
-    schedule_log.append({"time": datetime.now().isoformat(), "trigger": "07:00 Morgen-Analyse"})
+    log.info(f"🌅 Morgen-Analyse | {jetzt().strftime('%d.%m.%Y %H:%M')}")
+    schedule_log.append({"time": jetzt().isoformat(), "trigger": "07:00 Morgen-Analyse"})
     asyncio.run(run_analysis_pipeline(AnalyzeRequest(
         assets=active_config["assets"],
         strategy=active_config["strategy"],
@@ -201,7 +207,7 @@ async def _check_trade_results(offene: list):
             geoeffnet = None
             try:
                 geoeffnet = datetime.fromisoformat(str(trade.get("Geöffnet am", "")))
-                alter_std = (datetime.now() - geoeffnet).total_seconds() / 3600
+                alter_std = (jetzt() - geoeffnet).total_seconds() / 3600
             except Exception:
                 alter_std = 0.0
 
@@ -335,6 +341,7 @@ async def lifespan(app: FastAPI):
         f"🔗 Capital.com: {'✅ Verbunden' if capital.is_connected() else '❌ Getrennt'}\n"
         f"📅 Tages-Report: 20:00 Uhr\n"
         f"🔍 Ergebnis-Check: alle 4h\n"
+        f"🛡️ Portfolio-Schutz: aktiv (Backend)\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"🌐 {DASHBOARD_URL}"
     )
@@ -342,7 +349,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Trading Multi-Agent v3.0", lifespan=lifespan)
+app = FastAPI(title="Trading Multi-Agent v3.1", lifespan=lifespan)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -394,7 +401,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         return
     pipeline_running = True
     try:
-        ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+        ts = jetzt().strftime("%d.%m.%Y %H:%M")
         wochenende = ist_wochenende()
         log.info(f"PIPELINE START | {ts} | {req.strategy} | {req.assets} | Wochenende: {wochenende}")
 
@@ -421,6 +428,17 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         # Demo-Trades öffnen
         trades_geoeffnet = 0
         trades_übersprungen = 0
+        trades_abgelehnt = []          # (asset, grund) - vom Portfolio-Schutz blockiert
+
+        # ── Portfolio-Schutz (NEU): Drawdown, Exposure, offene Trades ─────────
+        # Das war bisher NUR im Dashboard als Anzeige - das Backend hat trotzdem
+        # jeden Trade geöffnet. Jetzt entscheidet demo_tracker.get_risiko_status().
+        risiko = get_risiko_status()
+        if not risiko["neue_trades_erlaubt"]:
+            log.warning(f"🛡️ Portfolio-Schutz {risiko['stufe']}: {'; '.join(risiko['gruende'])} → keine neuen Trades")
+        elif risiko["einsatz_faktor"] < 1.0:
+            log.info(f"🛡️ Portfolio-Schutz {risiko['stufe']}: Einsatz × {risiko['einsatz_faktor']:g}")
+        # ───────────────────────────────────────────────────────────────────────
 
         # ── Volatilität pro Asset aus den Tech-Reports (für volatility-Modus) ──
         # Echte Bollinger-Bandbreite aus der Pipeline (Rohindikatoren).
@@ -451,6 +469,10 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 continue
 
             asset = signal.get("asset", "")
+
+            if not risiko["neue_trades_erlaubt"]:
+                trades_abgelehnt.append((asset, risiko["stufe"]))
+                continue
 
             # ── Wochenende Check ──────────────────────────────────────────
             if not asset_handelbar(asset):
@@ -492,11 +514,14 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 "volatility_pct": vola_lookup.get(asset, 0),
                 "sessionScore":   result.get("sessionScore", 0),
             })
-            trades_geoeffnet += 1
-            
-            # --- HIER WURDE DER CODE GEHÄRTET (Sichere ID nach Trade-Erstellung) ---
+
+            # --- Sichere ID nach Trade-Erstellung / Ablehnung durch Schutz ---
             if not isinstance(demo_trade, dict):
                 demo_trade = {}
+            if demo_trade.get("abgelehnt"):
+                trades_abgelehnt.append((asset, demo_trade["abgelehnt"]))
+                continue
+            trades_geoeffnet += 1
             
             trade_id = demo_trade.get("ID", "Unbekannt")
             log.info(f"Demo-Trade: {trade_id} | {asset} | Entry: {entry_price} | SL: {signal.get('stopLoss')}% | TP: {signal.get('takeProfit')}%")
@@ -537,6 +562,15 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         if not risk_ok:
             msg += f"🛡️ _Risk Guardian: Setup nicht freigegeben – keine Trades eröffnet._\n"
+
+        if trades_abgelehnt:
+            msg += f"🛡️ *Portfolio-Schutz:* {len(trades_abgelehnt)} Trade(s) nicht eröffnet\n"
+            for a, g in trades_abgelehnt[:4]:
+                msg += f"  • {a}: _{str(g)[:70]}_\n"
+        if risiko["stufe"] != "NORMAL":
+            msg += (f"📉 DD aktuell {risiko['aktueller_drawdown']:.1f}% | offen "
+                    f"{risiko['offene_exposure_pct']:.1f}% ({risiko['offen']} Trades)\n")
+        msg += f"✅ Demo-Trades eröffnet: {trades_geoeffnet}\n"
 
         msg += (
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -724,7 +758,7 @@ async def selftest():
         for t in offene:
             try:
                 geo = datetime.fromisoformat(str(t.get("Geöffnet am", "")))
-                if (datetime.now() - geo).total_seconds() / 3600 > MAX_TRADE_TAGE * 24 + 4:
+                if (jetzt() - geo).total_seconds() / 3600 > MAX_TRADE_TAGE * 24 + 4:
                     alte += 1
             except Exception:
                 pass
@@ -747,6 +781,18 @@ async def selftest():
     except Exception as e:
         add("Marktdaten & Indikatoren", False, f"Fehler: {e}")
 
+    # 8b. Portfolio-Schutz
+    try:
+        r = get_risiko_status()
+        add("Portfolio-Schutz", r["neue_trades_erlaubt"],
+            f"{r['stufe']} | DD aktuell {r['aktueller_drawdown']:.1f}% (max {r['max_drawdown']:.1f}%) "
+            f"| offen {r['offene_exposure_pct']:.1f}% / {r['limits']['max_exposure_pct']:.0f}% "
+            f"| {r['offen']} / {r['limits']['max_offene_trades']} Trades"
+            + (f" → {'; '.join(r['gruende'])}" if r["gruende"] else ""),
+            warn=True)
+    except Exception as e:
+        add("Portfolio-Schutz", False, f"Fehler: {e}")
+
     # 9. Zeitpläne
     jobs = scheduler.get_jobs()
     add("Zeitpläne", len(jobs) >= 3, f"{len(jobs)} Jobs aktiv")
@@ -758,7 +804,7 @@ async def selftest():
         "gesamt": "fehler" if fehler else ("warnung" if warnungen else "ok"),
         "fehler": fehler, "warnungen": warnungen, "geprueft": len(checks),
         "checks": checks,
-        "zeit": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+        "zeit": jetzt().strftime("%d.%m.%Y %H:%M:%S"),
     }
 
 @app.post("/backtest/optimieren")
@@ -885,7 +931,7 @@ async def excel_download():
     return FileResponse(
         excel_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        filename=f"Trading_Tracker_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        filename=f"Trading_Tracker_{jetzt().strftime('%Y%m%d')}.xlsx"
     )
 
 @app.get("/demo/statistik")
@@ -952,7 +998,14 @@ async def status():
         "demo_roi":          demo["statistik"]["roi"],
         "demo_win_rate":     demo["statistik"]["win_rate"],
         "wochenende":        ist_wochenende(),
+        "risiko":            demo.get("risiko", {}),
+        "server_zeit":       jetzt().isoformat(),
     }
+
+@app.get("/demo/risiko")
+async def demo_risiko():
+    """Aktueller Portfolio-Schutz-Status (Drawdown, Exposure, Limits)."""
+    return get_risiko_status()
 
 @app.post("/connect")
 async def connect_capital(_auth: bool = Depends(pruefe_token)):
