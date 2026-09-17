@@ -572,6 +572,7 @@ function renderDemoStats(stats){
     ["Gesamt Trades",stats.gesamt_trades||0,"var(--text)"],
     ["Gewonnen",stats.gewonnen||0,"var(--green)"],
     ["Verloren",stats.verloren||0,"var(--red)"],
+    ["Break-even",stats.breakeven||0,"var(--gold)"],
     ["Offen",stats.offen||0,"var(--cyan)"],
     ["Win Rate",(stats.win_rate||0).toFixed(1)+"%",(stats.win_rate||0)>=50?"var(--green)":"var(--red)"],
     ["Gesamt P&L",(stats.gesamt_pnl>=0?"+":"")+"€"+fmt(stats.gesamt_pnl||0),(stats.gesamt_pnl||0)>=0?"var(--green)":"var(--red)"],
@@ -623,8 +624,16 @@ function renderChart(snapshots){
     ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fillStyle=isUp?"#10b981":"#f43f5e";ctx.fill();
   });
   ctx.fillStyle="#525270";ctx.font="9px IBM Plex Mono";ctx.textAlign="center";
-  const step=Math.max(1,Math.floor(snapshots.length/5));
-  snapshots.forEach((s,i)=>{if(i%step===0||i===snapshots.length-1){const x=pad.l+cw*i/(vals.length-1);ctx.fillText(s.datum||"",x,h-5);}});
+  // Labels nur zeichnen, wenn genug Abstand zum letzten (kein Überlappen mehr)
+  let lastX=-999; const minGap=44;
+  snapshots.forEach((s,i)=>{
+    const x=pad.l+cw*i/(vals.length-1);
+    const isLast=i===snapshots.length-1;
+    if(isLast||x-lastX>=minGap){
+      if(isLast&&x-lastX<minGap){ctx.clearRect(lastX-24,h-14,48,14);}
+      ctx.fillText(s.datum||"",x,h-5);lastX=x;
+    }
+  });
   const pct=((vals[vals.length-1]-vals[0])/vals[0]*100).toFixed(1);
   document.getElementById("chart-trend").textContent=(isUp?"↗ +":"↘ ")+pct+"%";
   document.getElementById("chart-trend").style.color=isUp?"var(--green)":"var(--red)";
@@ -663,6 +672,7 @@ function renderOffeneTrades(trades){
 
     // Absoluter SL/TP Preis berechnen
     let slPreis = "—", tpPreis = "—";
+    const beAktiv = String(tv(t,"BE-Seit","be_seit")||"").trim().length>0;
     if(entry > 0){
       if(isBuy){
         slPreis = fmtP(entry * (1 - slPct/100));
@@ -671,6 +681,7 @@ function renderOffeneTrades(trades){
         slPreis = fmtP(entry * (1 + slPct/100));
         tpPreis = fmtP(entry * (1 - tpPct/100));
       }
+      if(beAktiv) slPreis = `<span title="Break-even-Stop aktiv: Stop liegt am Entry">⚖️ ${fmtP(entry)}</span>`;
     }
 
     return`<tr>
@@ -679,15 +690,16 @@ function renderOffeneTrades(trades){
       <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${act.toUpperCase()}</span></td>
       <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
       <td style="color:var(--gold);font-weight:600">${entry>0?fmtP(entry):"—"}</td>
-      <td style="color:var(--red);font-weight:600">${slPreis}</td>
+      <td style="color:${beAktiv?"var(--gold)":"var(--red)"};font-weight:600">${slPreis}</td>
       <td style="color:var(--green);font-weight:600">${tpPreis}</td>
       <td style="color:var(--red)">${slPct}%</td>
       <td style="color:var(--green)">${tpPct}%</td>
       <td style="color:${(tv(t,"Konfidenz","konfidenz")||0)>=70?"var(--green)":"var(--gold)"}">${tv(t,"Konfidenz","konfidenz")||0}%</td>
       <td style="color:var(--muted);font-size:9px">${tv(t,"Geöffnet am","geoeffnet_am")||"—"}</td>
       <td><div style="display:flex;gap:4px">
-        <button onclick="schliesseDemo('${tid}','gewonnen')" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
-        <button onclick="schliesseDemo('${tid}','verloren')" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
+        <button onclick="schliesseMarkt('${tid}')" title="Zum aktuellen Marktpreis schließen (echter P&amp;L)" style="background:#f5c54222;color:var(--gold);border:1px solid #f5c54244;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer;font-weight:700">💱 Markt</button>
+        <button onclick="schliesseDemo('${tid}','gewonnen')" title="Als voller TP buchen" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
+        <button onclick="schliesseDemo('${tid}','verloren')" title="Als voller SL buchen" style="background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">❌</button>
       </div></td>
     </tr>`;
   }).join("")}
@@ -721,8 +733,20 @@ function renderLetzteTrades(trades){
   </tbody></table></div>`;
 }
 
+async function schliesseMarkt(id){
+  toast(`Hole Kurs für ${id}...`,"ok");
+  const v=await api(`/demo/trade/${id}/markt`);
+  if(!v||v.pnl===undefined){toast("Kein Kurs verfügbar","err");return;}
+  const sign=v.pnl>=0?"+":"";
+  if(!confirm(`${id} ${v.asset} ${v.action} zum Marktpreis schließen?\n\nEntry: ${fmtP(v.entry)}\nAktuell: ${fmtP(v.aktuell)}\nP&L: ${sign}€${fmt(v.pnl)} (Einsatz €${fmt(v.einsatz)})`))return;
+  const r=await api(`/demo/trade/${id}/schliessen?ergebnis=markt`,"POST");
+  if(r&&r.status==="geschlossen"){toast(`${id} geschlossen: ${sign}€${fmt(v.pnl)}`,v.pnl>=0?"ok":"err");setTimeout(ladeDemo,500);}
+  else toast("Fehler beim Schließen","err");
+}
+
 async function schliesseDemo(id,ergebnis){
-  if(!confirm(`Trade ${id} als "${ergebnis}" schließen?`))return;
+  const txt=ergebnis==="gewonnen"?"als vollen TP-GEWINN buchen":"als vollen SL-VERLUST buchen";
+  if(!confirm(`Trade ${id} ${txt}?\n\n(Tipp: „💱 Markt" schließt zum echten Kurs.)`))return;
   const r=await api(`/demo/trade/${id}/schliessen?ergebnis=${ergebnis}`,"POST");
   if(r){toast(`Trade ${id}: ${ergebnis}`,"ok");setTimeout(ladeDemo,500);}
   else toast("Fehler","err");
