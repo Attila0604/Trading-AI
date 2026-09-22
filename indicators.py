@@ -110,11 +110,50 @@ def bollinger_bands(closes: list[float], period: int = 20, std_mult: float = 2.0
     }
 
 
+def atr(candles: list[dict], period: int = 14) -> Optional[float]:
+    """
+    Average True Range — wie weit sich ein Asset pro Kerze normal bewegt.
+
+    True Range = das Größte aus:
+      (Hoch - Tief), |Hoch - Vorheriger Schluss|, |Tief - Vorheriger Schluss|
+    Der letzte Teil fängt Eröffnungs-Lücken (Wochenende, Overnight) mit ein.
+
+    Gebraucht wird das, um SL/TP an die Volatilität zu koppeln: ein fester
+    2%-Stop ist bei EUR/USD (~0.5% Tagesbewegung) weit weg, bei BTC (~3%)
+    dagegen INNERHALB des normalen Rauschens - derselbe Stop bedeutet bei
+    jedem Asset etwas völlig anderes.
+    """
+    if not candles or len(candles) < period + 1:
+        return None
+    trs = []
+    for i in range(1, len(candles)):
+        h = candles[i].get("high")
+        l = candles[i].get("low")
+        pc = candles[i - 1].get("close")
+        if h is None or l is None or pc is None:
+            continue
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if len(trs) < period:
+        return None
+    return sum(trs[-period:]) / period
+
+
+def atr_pct(candles: list[dict], period: int = 14) -> Optional[float]:
+    """ATR als Prozentsatz vom aktuellen Kurs (vergleichbar über Assets hinweg)."""
+    a = atr(candles, period)
+    if a is None:
+        return None
+    letzter = candles[-1].get("close")
+    if not letzter:
+        return None
+    return round(a / letzter * 100, 3)
+
+
 def calculate_all_indicators(candles: list[dict]) -> dict:
     """Alle Indikatoren auf einen Schlag berechnen."""
     if not candles or len(candles) < 30:
         return {"error": f"Zu wenige Kerzen: {len(candles) if candles else 0}"}
-    
+
     closes = [c["close"] for c in candles]
     current = closes[-1]
     
@@ -171,6 +210,8 @@ def calculate_all_indicators(candles: list[dict]) -> dict:
         "ema200":          round(e200, 5) if e200 else None,
         "emaAlignment":    ema_alignment,
         "bollinger":       bb_data,
+        "atr":             round(atr(candles, 14), 5) if atr(candles, 14) else None,
+        "atrPct":          atr_pct(candles, 14),
         "confluenceScore": confluence,
         "candleCount":     len(candles),
     }
