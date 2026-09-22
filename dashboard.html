@@ -277,6 +277,18 @@ button:hover{filter:brightness(1.15)}
         <button id="st-btn" onclick="systemcheck()" style="background:var(--s);color:var(--cyan);border:1px solid #22d3ee55;border-radius:4px;padding:6px 16px;font-size:11px;font-weight:600;cursor:pointer;width:100%">▶ Systemcheck starten</button>
         <div id="st-result" style="margin-top:10px"></div>
       </div>
+      <div class="card" style="background:#f5c54208;border-color:#f5c54233">
+        <div class="card-title">🗃️ NEUER ABSCHNITT — Tracker zurücksetzen</div>
+        <div style="color:var(--muted);font-size:10px;line-height:1.6;margin-bottom:8px">
+          Archiviert die laufende Excel mit Zeitstempel und startet die Statistik bei €0.
+          <b style="color:var(--gold)">Es wird nichts gelöscht</b> — die alte Datei bleibt auf dem Volume liegen.<br>
+          Sinnvoll nach einer Parameter-Umstellung: sonst stehen Trades mit alten und neuen
+          Regeln in derselben Auswertung und man kann nichts mehr vergleichen.
+          Geht nur, wenn <b>kein Trade mehr offen</b> ist.
+        </div>
+        <button id="rs-btn" onclick="trackerReset()" style="background:#f5c54215;color:var(--gold);border:1px solid #f5c54255;border-radius:4px;padding:6px 16px;font-size:11px;font-weight:600;cursor:pointer;width:100%">🗃️ Neuen Abschnitt starten</button>
+        <div id="rs-result" style="margin-top:10px;font-size:10px"></div>
+      </div>
       <div class="card" style="background:#a855f708;border-color:#a855f733">
         <div class="card-title">🔬 BACKTEST — welcher Modus ist der beste?</div>
         <div style="color:var(--muted);font-size:10px;line-height:1.6;margin-bottom:8px">
@@ -860,6 +872,29 @@ const MM_MODI=[
   {id:"volatility",      name:"Volatilitäts-invers",    d:"Kleiner bei hoher Vola, größer bei ruhigem Markt",risiko:"MITTEL", c:"#22d3ee"},
   {id:"anti_martingale", name:"Anti-Martingale",        d:"Nach Gewinnen hoch, nach Verlusten runter",     risiko:"HOCH",    c:"#ef4444"},
 ];
+// ═══ TRACKER-RESET ════════════════════════════════════════════════════
+async function trackerReset(){
+  const el=document.getElementById("rs-result");
+  const st=await api("/demo/statistik");
+  const offen=(st&&st.statistik&&st.statistik.offen)||0;
+  if(offen>0){
+    el.innerHTML=`<span style="color:var(--red)">⛔ ${offen} Trade(s) noch offen — erst über „💱 Markt" schließen.</span>`;
+    return;
+  }
+  const kap=(st&&st.aktuelles_kapital)||0, anz=(st&&st.statistik&&st.statistik.gesamt_trades)||0;
+  if(!confirm(`Neuen Abschnitt starten?\n\n${anz} Trades werden archiviert (nicht gelöscht).\nKapital: €${fmt(kap)} → €1000,00\nDrawdown wird auf 0% zurückgesetzt.\n\nDie alte Excel bleibt als Archiv-Datei erhalten.`))return;
+  const btn=document.getElementById("rs-btn"); btn.disabled=true; btn.textContent="Archiviere...";
+  const r=await api("/demo/reset?bestaetigung=RESET","POST");
+  btn.disabled=false; btn.textContent="🗃️ Neuen Abschnitt starten";
+  if(r&&r.status==="zurückgesetzt"){
+    el.innerHTML=`<span style="color:var(--green)">✅ ${r.trades} Trades archiviert als <code>${r.archiviert}</code> — Start bei €${fmt(r.kapital_nachher)}</span>`;
+    toast("Neuer Abschnitt gestartet","ok"); setTimeout(ladeDemo,500); pollStatus();
+  } else {
+    el.innerHTML=`<span style="color:var(--red)">Fehler: ${(r&&r.detail)||"unbekannt"}</span>`;
+    toast("Reset fehlgeschlagen","err");
+  }
+}
+
 // ═══ SYSTEMCHECK ══════════════════════════════════════════════════════
 async function systemcheck(){
   const box=document.getElementById("st-result");
