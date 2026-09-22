@@ -190,6 +190,28 @@ def _ist_long(action) -> bool:
     return str(action or "").strip().lower() in ("buy", "long")
 
 
+def swap_kosten(einsatz: float, sl_pct: float, asset: str, tage: float) -> float:
+    """
+    Reine Rechnung: Finanzierungskosten in EUR für eine gegebene Haltedauer.
+    Getrennt von finanzierungskosten(), damit der Backtest sie ebenfalls
+    nutzen kann - dort gibt es keine Zeitstempel, nur Kerzen-Abstände.
+    """
+    if not FINANZIERUNG_AN:
+        return 0.0
+    try:
+        einsatz = float(einsatz or 0)
+        sl_pct  = float(sl_pct or 0)
+        tage    = float(tage or 0)
+        if einsatz <= 0 or sl_pct <= 0 or tage <= 0:
+            return 0.0
+        tage    = min(tage, 365.0)          # gegen kaputte Zeitstempel
+        nominal = einsatz / (sl_pct / 100.0)
+        satz    = FINANZIERUNG_SAETZE.get(str(asset or "").strip(), FINANZIERUNG_STANDARD)
+        return round(nominal * satz / 100.0 * tage, 2)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return 0.0
+
+
 def finanzierungskosten(einsatz: float, sl_pct: float, asset: str,
                         geoeffnet, geschlossen=None) -> float:
     """
@@ -203,27 +225,11 @@ def finanzierungskosten(einsatz: float, sl_pct: float, asset: str,
     Nebeneffekt der weiteren ATR-Stops: größerer SL% -> kleineres Nominal
     -> WENIGER Finanzierung. Weite Stops sind hier also doppelt sinnvoll.
     """
-    if not FINANZIERUNG_AN:
+    start = _parse_zeit(geoeffnet)
+    ende  = _parse_zeit(geschlossen) or jetzt()
+    if start is None:
         return 0.0
-    try:
-        einsatz = float(einsatz or 0)
-        sl_pct  = float(sl_pct or 0)
-        if einsatz <= 0 or sl_pct <= 0:
-            return 0.0
-        start = _parse_zeit(geoeffnet)
-        ende  = _parse_zeit(geschlossen) or jetzt()
-        if start is None:
-            return 0.0
-        tage = (ende - start).total_seconds() / 86400
-        if tage <= 0:
-            return 0.0
-        # Gegen kaputte Zeitstempel: nie mehr als ein Jahr berechnen
-        tage = min(tage, 365.0)
-        nominal = einsatz / (sl_pct / 100.0)
-        satz    = FINANZIERUNG_SAETZE.get(str(asset or "").strip(), FINANZIERUNG_STANDARD)
-        return round(nominal * satz / 100.0 * tage, 2)
-    except (ValueError, TypeError, ZeroDivisionError):
-        return 0.0
+    return swap_kosten(einsatz, sl_pct, asset, (ende - start).total_seconds() / 86400)
 
 
 def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
@@ -671,6 +677,37 @@ def breakeven_aktivieren(trade_id: str, stop_preis: float) -> dict:
             return t
     log.warning(f"Break-even: Trade {trade_id} nicht gefunden oder nicht offen")
     return {}
+
+
+@_synchronized
+def tracker_zuruecksetzen() -> dict:
+    """
+    Archiviert die laufende Excel und startet einen leeren Tracker bei 0.
+
+    Es wird NICHTS gelöscht: die alte Datei bleibt mit Zeitstempel im
+    DATA_DIR liegen. Gedacht für einen sauberen Schnitt zwischen zwei
+    Parameter-Generationen - sonst stehen Trades mit alten und neuen
+    SL/TP-Regeln in derselben Statistik und die Auswertung ist wertlos.
+    """
+    vorher = _lade_trades()
+    stats  = get_statistik()
+    if not EXCEL_FILE.exists():
+        _ensure_workbook()
+        return {"archiviert": None, "trades": 0, "kapital_vorher": stats["aktuelles_kapital"]}
+
+    stempel = jetzt().strftime("%Y%m%d_%H%M%S")
+    ziel    = EXCEL_FILE.parent / f"Trading_Tracker_archiv_{stempel}.xlsx"
+    EXCEL_FILE.rename(ziel)
+    _ensure_workbook()
+
+    log.info(f"🗃️ Tracker zurückgesetzt | {len(vorher)} Trades nach {ziel.name} archiviert "
+             f"| Kapital {stats['aktuelles_kapital']:.2f} € → {STARTKAPITAL:.2f} €")
+    return {
+        "archiviert":      ziel.name,
+        "trades":          len(vorher),
+        "kapital_vorher":  stats["aktuelles_kapital"],
+        "kapital_nachher": STARTKAPITAL,
+    }
 
 
 @_synchronized
