@@ -9,7 +9,9 @@ from contextlib import asynccontextmanager
 import asyncio, os, sys, json, logging
 from datetime import datetime
 
-from config import jetzt, BREAKEVEN_NACH_TAGEN
+from config import (jetzt, utc_nach_lokal, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
+                    BREAKEVEN_STOP_R, VOLA_ADAPTIV, ATR_SL_FAKTOR, ATR_TP_FAKTOR,
+                    ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
 
 from agents import run_pipeline
 from capital_client import CapitalClient
@@ -35,15 +37,11 @@ RAW_ASSETS      = os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500")
 ASSETS          = [a.strip() for a in RAW_ASSETS.split(",") if a.strip()]
 # ---------------------------------------------
 
-STRATEGY        = os.getenv("TRADING_STRATEGY", "adaptive")
-MAX_RISK_PCT    = float(os.getenv("MAX_RISK_PCT", "2"))
-STOP_LOSS_PCT   = float(os.getenv("STOP_LOSS_PCT", "1.5"))
-TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", "3.0"))
-POSITION_SIZE   = float(os.getenv("POSITION_SIZE_EUR", "1000"))
-AUTO_TRADE      = os.getenv("AUTO_TRADE", "false").lower() == "true"
-DATA_DIR        = os.getenv("DATA_DIR", "/app/data")
-MIN_CONFIDENCE  = int(os.getenv("MIN_CONFIDENCE", "70"))
-MM_MODUS        = os.getenv("MM_MODUS", "fixed_percent")
+# Alle aus config.py - EINE Quelle der Wahrheit. Eigene os.getenv-Zeilen mit
+# abweichenden Defaults sind hier schon einmal zum Problem geworden.
+from config import (TRADING_STRATEGY as STRATEGY, MAX_RISK_PCT, STOP_LOSS_PCT,
+                    TAKE_PROFIT_PCT, POSITION_SIZE, AUTO_TRADE, DATA_DIR,
+                    MIN_CONFIDENCE, MM_MODUS)
 # Schreibschutz: nur aktiv, wenn API_TOKEN gesetzt ist (sonst offen wie bisher)
 API_TOKEN       = os.getenv("API_TOKEN", "").strip()
 # Wie lange darf ein Trade laufen, bevor er zum Marktpreis geschlossen wird?
@@ -51,7 +49,9 @@ API_TOKEN       = os.getenv("API_TOKEN", "").strip()
 # oder TP. Ein zu kurzer Timeout kappt die Gewinner (die brauchen länger als die
 # Verlierer) und macht die Live-Ergebnisse systematisch schlechter als den
 # Backtest. Bei Tages-Kerzen dauert ein Trade im Schnitt ~12 Tage.
-MAX_TRADE_TAGE  = float(os.getenv("MAX_TRADE_TAGE", "14"))
+# Aus config.py, NICHT nochmal aus der Env lesen: hier stand ein eigener
+# Default von 14 Tagen, der den Config-Wert stillschweigend ausgehebelt hat.
+from config import MAX_TRADE_TAGE
 DASHBOARD_URL   = os.getenv("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
 
 # Assets die am Wochenende handelbar sind
@@ -233,16 +233,31 @@ async def _check_trade_results(offene: list):
                     log.warning(f"Kerzen-Fetch {asset} fehlgeschlagen: {ce}")
                     kerzen = []
 
+                # Kerzenzeiten kommen in UTC, Trade-Zeiten stehen in Wiener Zeit
+                # -> umrechnen, sonst klafft ein 1-2h-Loch direkt nach Eröffnung.
                 seit_open = []
+                zeit_bekannt = False
                 for c in kerzen:
                     ct = None
                     try:
-                        ct = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                        roh = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                        ct  = utc_nach_lokal(roh)
+                        zeit_bekannt = True
                     except Exception:
                         ct = None
                     if ct is None or geoeffnet is None or ct >= geoeffnet:
                         seit_open.append(c)
-                scan = seit_open if seit_open else kerzen
+
+                # KEIN Rückfall auf alle Kerzen: die Historie VOR der Eröffnung
+                # enthält fast sicher irgendwo einen SL- oder TP-Durchbruch und
+                # würde den Trade grundlos schließen. Lieber gar nicht scannen -
+                # der Momentanpreis unten fängt den Fall ab.
+                if seit_open:
+                    scan = seit_open
+                elif not zeit_bekannt and geoeffnet is None:
+                    scan = kerzen      # keinerlei Zeitinfo vorhanden -> alter Pfad
+                else:
+                    scan = []
 
                 treffer = None
                 for c in scan:
@@ -292,11 +307,15 @@ async def _check_trade_results(offene: list):
             except Exception:
                 be_seit = None
 
+            # Stop-Niveau: bei Alt-Trades ohne Spalte liegt es auf dem Entry
+            be_stop = float(trade.get("BE-Stop", 0) or 0) or entry_price
+
             if ergebnis is None and entry_price > 0 and be_seit is not None:
                 be_hit = False
                 for c in kerzen:
                     try:
-                        ct = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                        roh = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
+                        ct  = utc_nach_lokal(roh)
                     except Exception:
                         continue
                     if ct < be_seit:
@@ -304,34 +323,45 @@ async def _check_trade_results(offene: list):
                     hi, lo = c.get("high"), c.get("low")
                     if hi is None or lo is None:
                         continue
-                    if action in ("buy", "long") and lo <= entry_price:
+                    if action in ("buy", "long") and lo <= be_stop:
                         be_hit = True; break
-                    if action not in ("buy", "long") and hi >= entry_price:
+                    if action not in ("buy", "long") and hi >= be_stop:
                         be_hit = True; break
                 if not be_hit:
-                    if action in ("buy", "long") and current_price <= entry_price:
+                    if action in ("buy", "long") and current_price <= be_stop:
                         be_hit = True
-                    if action not in ("buy", "long") and current_price >= entry_price:
+                    if action not in ("buy", "long") and current_price >= be_stop:
                         be_hit = True
                 if be_hit:
-                    ergebnis = "breakeven"
-                    pnl_override = 0.0
-                    log.info(f"⚖️ Break-even getroffen: {trade_id} | {asset} | Entry {entry_price:.5f}")
+                    pnl_override = pnl_aus_preis(einsatz, entry_price, be_stop, action, sl_pct, tp_pct)
+                    ergebnis = "gewonnen" if pnl_override > 0 else "breakeven"
+                    log.info(f"⚖️ Nachgezogener Stop getroffen: {trade_id} | {asset} | "
+                             f"Stop {be_stop:.5f} | P&L €{pnl_override:.2f}")
 
-            # Phase 1: nach X Tagen im Plus → Stop auf Entry ziehen
+            # Phase 1: nach X Tagen und ab BREAKEVEN_AB_R Gewinn Stop nachziehen.
+            # Die Mindestschwelle ist entscheidend: ohne sie wurde schon bei
+            # vier Pips Gewinn nachgezogen und der Trade danach vom Rauschen
+            # getötet - vier von vier Auslösungen endeten bei exakt 0.
             if (ergebnis is None and entry_price > 0 and be_seit is None
                     and BREAKEVEN_NACH_TAGEN > 0 and alter_std > BREAKEVEN_NACH_TAGEN * 24):
                 unreal = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
-                if unreal > 0:
-                    breakeven_aktivieren(trade_id)
-                    log.info(f"⚖️ {trade_id} nach {alter_std/24:.1f} Tagen im Plus (€{unreal:.2f}) → Break-even-Stop gesetzt")
+                schwelle = BREAKEVEN_AB_R * einsatz
+                if unreal >= schwelle and schwelle > 0:
+                    if action in ("buy", "long"):
+                        neuer_stop = entry_price * (1 + BREAKEVEN_STOP_R * sl_pct / 100)
+                    else:
+                        neuer_stop = entry_price * (1 - BREAKEVEN_STOP_R * sl_pct / 100)
+                    breakeven_aktivieren(trade_id, neuer_stop)
+                    gesichert = BREAKEVEN_STOP_R * einsatz
+                    log.info(f"⚖️ {trade_id} nach {alter_std/24:.1f} Tagen bei €{unreal:.2f} "
+                             f"(≥ {schwelle:.2f}) → Stop auf {neuer_stop:.5f}")
                     send_whatsapp(
-                        f"⚖️ *Break-even-Stop gesetzt*\n"
+                        f"⚖️ *Stop nachgezogen*\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 {trade_id} | {asset} | {action.upper()}\n"
                         f"📈 Entry: {entry_price:.5f} | Aktuell: {current_price:.5f}\n"
                         f"💰 Unrealisiert: +€{unreal:.2f} nach {alter_std/24:.1f} Tagen\n"
-                        f"🔒 Stop jetzt am Entry - schlimmstenfalls ±0"
+                        f"🔒 Stop auf {neuer_stop:.5f} - mindestens +€{gesichert:.2f} gesichert"
                     )
             # ─────────────────────────────────────────────────────────────────
 
@@ -465,11 +495,32 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             capital_client=capital,   # eine Sitzung statt zwei
         )
 
-       # ── FIX: SL/TP IMMER mit aktiven Werten überschreiben ────────────
-        # Die KI darf nicht über Risk-Settings entscheiden
+       # ── SL/TP festlegen — die KI entscheidet NICHT über Risk-Settings ──
+        # Neu: volatilitätsabhängig je Asset statt fest für alle.
+        # Ein fester 2%-Stop ist bei EUR/USD (~0.5% Tagesbewegung) rund vier
+        # Tagesbewegungen weit weg, bei BTC (~3%) dagegen WENIGER als eine -
+        # der Trade wird vom normalen Rauschen ausgestoppt. Genau das zeigten
+        # die Daten: BTC 4/11 Gewinner mit SL-Treffer nach im Median 11
+        # Stunden, EUR/USD ausschließlich Timeouts ohne je SL oder TP zu
+        # erreichen.
+        atr_lookup = result.get("atr_pct", {}) or {}
+        sl_tp_log  = []
         for decision in result.get("decisions", []):
-            decision["stopLoss"]   = active_config["sl_pct"]
-            decision["takeProfit"] = active_config["tp_pct"]
+            a       = decision.get("asset", "")
+            atr_val = atr_lookup.get(a)
+            if VOLA_ADAPTIV and atr_val:
+                sl = max(ATR_SL_MIN_PCT, min(ATR_SL_MAX_PCT, atr_val * ATR_SL_FAKTOR))
+                tp = sl * (ATR_TP_FAKTOR / ATR_SL_FAKTOR) if ATR_SL_FAKTOR > 0 else sl * 2
+                decision["stopLoss"]   = round(sl, 2)
+                decision["takeProfit"] = round(tp, 2)
+                sl_tp_log.append(f"{a}: ATR {atr_val:.2f}% → SL {sl:.2f}% / TP {tp:.2f}%")
+            else:
+                decision["stopLoss"]   = active_config["sl_pct"]
+                decision["takeProfit"] = active_config["tp_pct"]
+                if VOLA_ADAPTIV:
+                    sl_tp_log.append(f"{a}: kein ATR → fest {active_config['sl_pct']}%/{active_config['tp_pct']}%")
+        if sl_tp_log:
+            log.info("[SL/TP] " + " | ".join(sl_tp_log))
         # ─────────────────────────────────────────────────────────────────
 
         latest_analysis = result
@@ -604,9 +655,14 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             star  = "⭐ " if s.get("confidence", 0) >= active_config["conf"] else ""
             handelbar = asset_handelbar(s.get("asset",""))
             skip = "" if handelbar else " _(Wochenende - übersprungen)_"
+            # SL/TP sind jetzt je Asset verschieden -> aus dem Signal lesen
+            s_sl = float(s.get("stopLoss", active_config["sl_pct"]) or active_config["sl_pct"])
+            s_tp = float(s.get("takeProfit", active_config["tp_pct"]) or active_config["tp_pct"])
+            s_atr = atr_lookup.get(s.get("asset", ""))
+            atr_txt = f" _(ATR {s_atr:.2f}%)_" if s_atr else ""
             msg  += (
                 f"{arrow} *{star}{s['asset']}* | {s['confidence']}%{skip}\n"
-                f"SL: {active_config['sl_pct']:.1f}% | TP: {active_config['tp_pct']:.1f}%\n"
+                f"SL: {s_sl:.1f}% | TP: {s_tp:.1f}%{atr_txt}\n"
                 f"_{s.get('summary', '')[:100]}_\n\n"
             )
 
@@ -660,8 +716,9 @@ async def auto_execute_signals(signals: list, size: float):
                 epic=asset_to_epic(sig["asset"]),
                 direction=sig["direction"].upper(),
                 size=size,
-                stop_loss_pct=active_config["sl_pct"],
-                take_profit_pct=active_config["tp_pct"],
+                # je Asset aus dem Signal, nicht mehr pauschal aus der Config
+                stop_loss_pct=float(sig.get("stopLoss") or active_config["sl_pct"]),
+                take_profit_pct=float(sig.get("takeProfit") or active_config["tp_pct"]),
             )
             if result.get("dealId"):
                 tracker.save_trade({**sig, "dealId": result["dealId"], "size": size, "status": "auto"})
@@ -851,7 +908,16 @@ async def selftest():
     add("Zeitpläne", len(jobs) >= 3, f"{len(jobs)} Jobs aktiv")
     add("Max. Haltedauer", True, f"{MAX_TRADE_TAGE:.0f} Tage (Backtest kennt keine Begrenzung)")
     add("Break-even-Stop", True,
-        f"nach {BREAKEVEN_NACH_TAGEN:.0f} Tagen im Plus → Stop auf Entry" if BREAKEVEN_NACH_TAGEN > 0 else "AUS")
+        (f"nach {BREAKEVEN_NACH_TAGEN:.0f} Tagen ab {BREAKEVEN_AB_R:g}R Gewinn → "
+         f"Stop auf +{BREAKEVEN_STOP_R:g}R") if BREAKEVEN_NACH_TAGEN > 0 else "AUS")
+    add("Volatilitäts-SL/TP", True,
+        (f"aktiv: SL = {ATR_SL_FAKTOR:g} × Tages-ATR (Grenzen {ATR_SL_MIN_PCT:g}–{ATR_SL_MAX_PCT:g}%), "
+         f"R:R {ATR_TP_FAKTOR/ATR_SL_FAKTOR:.1f}") if VOLA_ADAPTIV
+        else f"AUS - fest {active_config['sl_pct']}% / {active_config['tp_pct']}%")
+    from config import FINANZIERUNG_AN, FINANZIERUNG_SAETZE
+    add("Finanzierungskosten", True,
+        ("aktiv: " + ", ".join(f"{k} {v:g}%/Tag" for k, v in list(FINANZIERUNG_SAETZE.items())[:4]))
+        if FINANZIERUNG_AN else "AUS - Demo rechnet zu optimistisch", warn=True)
 
     fehler   = sum(1 for c in checks if c["status"] == "fehler")
     warnungen = sum(1 for c in checks if c["status"] == "warn")
