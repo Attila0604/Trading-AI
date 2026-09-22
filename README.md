@@ -192,8 +192,34 @@ Greift in `demo_tracker.get_risiko_status()` **vor** jedem Demo-Trade – nicht 
 | `MAX_OFFENE_TRADES` | 6 | Max. gleichzeitig offene Demo-Trades |
 | `EIN_TRADE_PRO_ASSET` | true | Kein zweiter Trade (auch nicht gegenläufig) im selben Asset |
 | `ZEITZONE` | Europe/Vienna | Alle Zeitstempel (Excel, Timeout, Logs) |
-| `BREAKEVEN_NACH_TAGEN` | 4 | Trade nach X Tagen im Plus (ohne TP) → Stop auf Entry; fällt der Kurs zurück, Schließen mit P&L 0 (Status `breakeven`). 0 = aus |
-| `MAX_TRADE_TAGE` | 14 | Danach Schließen zum Marktpreis |
+| `BREAKEVEN_NACH_TAGEN` | 14 | Erst nach X Tagen Stop nachziehen. 0 = aus |
+| `BREAKEVEN_AB_R` | 1.0 | Mindestgewinn in R, bevor nachgezogen wird (verhindert Nachziehen bei Rauschen) |
+| `BREAKEVEN_STOP_R` | 0.3 | Wo der Stop dann liegt, in R — nicht auf dem Entry, sondern im Gewinn |
+| `MAX_TRADE_TAGE` | 45 | Danach Schließen zum Marktpreis (Wochen-Horizont) |
+| `MAX_GLEICHE_RICHTUNG` | 2 | Max. offene Positionen in dieselbe Richtung (Klumpenrisiko) |
+
+### Volatilitäts-adaptive SL/TP
+
+Fester Stop = bei jedem Asset etwas anderes: 2 % sind bei EUR/USD (~0,5 % Tagesbewegung) vier Tagesbewegungen weit weg, bei BTC (~3 %) weniger als eine. Deshalb SL/TP als Vielfaches des Tages-ATR.
+
+| Env-Variable | Default | Wirkung |
+|---|---|---|
+| `VOLA_ADAPTIV` | true | ATR-basierte SL/TP statt fester Prozentsätze |
+| `ATR_SL_FAKTOR` | 3.0 | SL = 3 × Tages-ATR (≈ 1,5 Wochen-ATR) |
+| `ATR_TP_FAKTOR` | 6.0 | TP = 6 × Tages-ATR → R:R 2,0 |
+| `ATR_SL_MIN_PCT` / `ATR_SL_MAX_PCT` | 1 / 10 | Unter-/Obergrenze gegen ATR-Ausreißer |
+| `KERZEN_AUFLOESUNG` | DAY | Kerzenbasis der Analyse (vorher HOUR_4) |
+
+Ein weiterer Stop kostet **kein** zusätzliches Euro-Risiko: der Einsatz *ist* der maximale Verlust, `sl_pct` bestimmt nur die Preisdistanz und damit die (kleinere) Position.
+
+### Übernacht-Finanzierung
+
+| Env-Variable | Default | Wirkung |
+|---|---|---|
+| `FINANZIERUNG_AN` | true | Swap-Kosten beim Schließen abziehen |
+| `SWAP_FX_PCT` / `SWAP_INDEX_PCT` | 0.015 | % pro Tag auf das Nominal (= Einsatz / SL%) |
+| `SWAP_GOLD_PCT` | 0.020 | " |
+| `SWAP_CRYPTO_PCT` | 0.060 | " |
 
 Manuelles Schließen im Dashboard: **💱 Markt** = zum aktuellen Kurs (echter P&L, mit Vorschau), ✅/❌ = voller TP/SL.
 API: `GET /demo/trade/{id}/markt` (Vorschau), `POST /demo/trade/{id}/schliessen?ergebnis=markt|gewonnen|verloren|breakeven`.
