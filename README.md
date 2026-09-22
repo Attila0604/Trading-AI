@@ -225,3 +225,14 @@ Manuelles Schließen im Dashboard: **💱 Markt** = zum aktuellen Kurs (echter P
 API: `GET /demo/trade/{id}/markt` (Vorschau), `POST /demo/trade/{id}/schliessen?ergebnis=markt|gewonnen|verloren|breakeven`.
 
 Status: `GET /demo/risiko`, außerdem in `/status` und `/selftest`.
+
+### Neuer Abschnitt (Tracker-Reset)
+
+`POST /demo/reset?bestaetigung=RESET` — benennt die laufende `Trading_Tracker.xlsx` in
+`Trading_Tracker_archiv_<Zeitstempel>.xlsx` um und startet die Statistik bei 0.
+**Es wird nichts gelöscht.** Geht nur, wenn kein Trade mehr offen ist (sonst 409).
+Knopf dafür im Konfigurations-Tab.
+
+Gedacht für einen sauberen Schnitt zwischen zwei Parameter-Generationen: stehen
+Trades mit alten und neuen SL/TP-Regeln in derselben Statistik, lässt sich hinterher
+nicht mehr sagen, woran ein Ergebnis lag.
