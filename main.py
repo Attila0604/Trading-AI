@@ -20,7 +20,7 @@ from whatsapp import send_whatsapp
 from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
     get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis,
-    get_risiko_status, breakeven_aktivieren,
+    get_risiko_status, breakeven_aktivieren, tracker_zuruecksetzen,
 )
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi, optimiere_parameter
@@ -456,7 +456,7 @@ class AnalyzeRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     asset: str = None
-    resolution: str = "HOUR_4"
+    resolution: str = "DAY"      # Wochen-Horizont -> Tageskerzen
     count: int = 500
     sl_pct: float = None
     tp_pct: float = None
@@ -944,7 +944,8 @@ async def backtest_optimieren(req: BacktestRequest = None, _auth: bool = Depends
     if not candles or len(candles) < 80:
         raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
     res = optimiere_parameter(candles, startkapital=req.startkapital,
-                              mm_modus=active_config["mm_modus"])
+                              mm_modus=active_config["mm_modus"],
+                              asset=asset, resolution=req.resolution)
     res["asset"] = asset
     res["resolution"] = req.resolution
     return res
@@ -972,7 +973,8 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
         raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
 
     res = vergleiche_modi(candles, startkapital=req.startkapital, sl_pct=sl, tp_pct=tp,
-                          min_confluence=req.min_confluence)
+                          min_confluence=req.min_confluence,
+                          asset=asset, resolution=req.resolution)
     res["asset"]      = asset
     res["resolution"] = req.resolution
 
@@ -987,6 +989,7 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
         )
         for i, r in enumerate(top, 1):
             msg += (f"{i}. *{r['mm_name']}*: {'+' if r['roi_pct'] >= 0 else ''}{r['roi_pct']:.1f}% ROI "
+                    f"(vor Kosten {r.get('roi_vor_kosten', 0):+.1f}%) "
                     f"| DD {r['max_drawdown_pct']:.1f}% | PF {r['profit_factor']}\n")
         msg += f"━━━━━━━━━━━━━━━━━━━━\n🌐 {DASHBOARD_URL}"
         send_whatsapp(msg)
@@ -1134,6 +1137,34 @@ async def demo_trade_schliessen(trade_id: str, ergebnis: str = "markt", _auth: b
         return {"status": "geschlossen", "ergebnis": status, "bewertung": bewertung, "trade": geschlossen}
     trade = trade_schliessen(trade_id, ergebnis)
     return {"status": "geschlossen", "ergebnis": ergebnis, "trade": trade}
+
+@app.post("/demo/reset")
+async def demo_reset(bestaetigung: str = "", _auth: bool = Depends(pruefe_token)):
+    """
+    Archiviert den laufenden Tracker und startet bei 0.
+    Verlangt ?bestaetigung=RESET, damit es nicht versehentlich passiert.
+    Es wird nichts gelöscht - die alte Datei bleibt als Archiv im DATA_DIR.
+    """
+    if bestaetigung != "RESET":
+        raise HTTPException(status_code=400,
+                            detail="Bestätigung fehlt: ?bestaetigung=RESET anhängen")
+    offene = get_offene_trades()
+    if offene:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(offene)} Trades sind noch offen ({', '.join(str(t.get('ID')) for t in offene[:8])}). "
+                   f"Erst schließen - sonst wird die Historie unvollständig archiviert.")
+    info = tracker_zuruecksetzen()
+    send_whatsapp(
+        f"🗃️ *Tracker zurückgesetzt*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 {info['trades']} Trades archiviert\n"
+        f"📄 {info.get('archiviert', '-')}\n"
+        f"💰 €{info['kapital_vorher']:.2f} → €{info['kapital_nachher']:.2f}\n"
+        f"🔄 Neuer Abschnitt startet mit ATR-Stops"
+    )
+    return {"status": "zurückgesetzt", **info}
+
 
 @app.get("/demo/trades/offen")
 async def demo_trades_offen():
