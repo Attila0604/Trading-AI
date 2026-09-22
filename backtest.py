@@ -17,6 +17,7 @@ Ablauf:
 import logging
 from indicators import calculate_all_indicators
 from money_management import berechne_einsatz, MODI
+from demo_tracker import swap_kosten
 
 log = logging.getLogger(__name__)
 
@@ -175,15 +176,28 @@ def generiere_trades(candles: list, sl_pct: float = 1.5, tp_pct: float = 3.0,
 
 
 # ── 2. Ein MM-Modus über die feste Trade-Sequenz simulieren ──────────────────
+# Kerzen-Auflösung → Tage pro Kerze (für die Finanzierungskosten)
+TAGE_PRO_KERZE = {
+    "MINUTE": 1/1440, "MINUTE_5": 5/1440, "MINUTE_15": 15/1440, "MINUTE_30": 30/1440,
+    "HOUR": 1/24, "HOUR_4": 4/24, "DAY": 1.0, "WEEK": 7.0,
+}
+
+
 def simuliere_mm(trade_seq: list, mm_modus: str = "fixed_percent",
                  startkapital: float = 1000.0, sl_pct: float = 1.5,
-                 tp_pct: float = 3.0, params: dict = None) -> dict:
+                 tp_pct: float = 3.0, params: dict = None,
+                 asset: str = None, resolution: str = "DAY") -> dict:
     kapital  = startkapital
     equity   = [round(kapital, 2)]
     peak     = kapital
     max_dd   = 0.0
     wins = losses = 0
     brutto_gewinn = brutto_verlust = 0.0
+    # Übernacht-Finanzierung: ohne sie zeigt der Backtest Ergebnisse, die es
+    # so nie geben wird. Bei dünnen Vorteilen (PF um 1.0) entscheidet allein
+    # diese Position über Plus oder Minus.
+    tage_je_kerze = TAGE_PRO_KERZE.get(str(resolution).upper(), 1.0)
+    swap_gesamt   = 0.0
     verlauf  = []   # letzte Ergebnisse für Kelly/Anti-Martingale
 
     for t in trade_seq:
@@ -214,6 +228,12 @@ def simuliere_mm(trade_seq: list, mm_modus: str = "fixed_percent",
             losses += 1
             brutto_verlust += einsatz
 
+        # Haltedauer aus den Kerzen-Indizes → Finanzierungskosten
+        kerzen = max(0, int(t.get("exit_i", 0)) - int(t.get("entry_i", 0)))
+        swap   = swap_kosten(einsatz, sl_pct, asset, kerzen * tage_je_kerze)
+        pnl   -= swap
+        swap_gesamt += swap
+
         kapital += pnl
         verlauf.append(t["ergebnis"])
         equity.append(round(kapital, 2))
@@ -242,6 +262,8 @@ def simuliere_mm(trade_seq: list, mm_modus: str = "fixed_percent",
         "win_rate":         round(wins / abgeschlossen * 100, 1) if abgeschlossen else 0.0,
         "max_drawdown_pct": round(max_dd, 2),
         "profit_factor":    profit_factor if profit_factor != float("inf") else "∞",
+        "finanzierung":     round(swap_gesamt, 2),
+        "roi_vor_kosten":   round((kapital + swap_gesamt - startkapital) / startkapital * 100, 2) if startkapital > 0 else 0,
         "equity_curve":     equity,
     }
 
@@ -249,7 +271,8 @@ def simuliere_mm(trade_seq: list, mm_modus: str = "fixed_percent",
 # ── 3. Alle Modi über dieselbe Trade-Sequenz vergleichen ─────────────────────
 def vergleiche_modi(candles: list, startkapital: float = 1000.0,
                     sl_pct: float = 1.5, tp_pct: float = 3.0,
-                    min_confluence: int = 6, warmup: int = 50) -> dict:
+                    min_confluence: int = 6, warmup: int = 50,
+                    asset: str = None, resolution: str = "DAY") -> dict:
     if not candles or len(candles) < warmup + 10:
         return {"error": f"Zu wenige Kerzen: {len(candles) if candles else 0} (min {warmup + 10})"}
 
@@ -269,7 +292,8 @@ def vergleiche_modi(candles: list, startkapital: float = 1000.0,
 
     ergebnisse = []
     for modus in MODI.keys():
-        res = simuliere_mm(trade_seq, modus, startkapital, sl_pct, tp_pct)
+        res = simuliere_mm(trade_seq, modus, startkapital, sl_pct, tp_pct,
+                           asset=asset, resolution=resolution)
         res.pop("equity_curve", None)   # aus der Vergleichs-Tabelle raus (zu groß)
         ergebnisse.append(res)
 
@@ -292,7 +316,8 @@ def vergleiche_modi(candles: list, startkapital: float = 1000.0,
 # ── 4. Parameter-Optimierung: welche SL/TP/Schwelle funktioniert? ────────────
 def optimiere_parameter(candles: list, startkapital: float = 1000.0,
                         mm_modus: str = "fixed_percent", min_trades: int = 25,
-                        warmup: int = 50) -> dict:
+                        warmup: int = 50, asset: str = None,
+                        resolution: str = "DAY") -> dict:
     """
     Probiert systematisch SL/TP-Verhältnisse und Signal-Schwellen durch.
 
@@ -303,6 +328,8 @@ def optimiere_parameter(candles: list, startkapital: float = 1000.0,
       - "benoetigte_wr" zeigt, welche Win-Rate das SL/TP-Verhaeltnis rechnerisch
         braucht, um bei null zu landen - erst ein Abstand nach oben ist ein Edge
       - Ein Ergebnis zaehlt erst, wenn es auf einem ZWEITEN Asset ebenfalls haelt
+      - Die Uebernacht-Finanzierung ist eingerechnet: bei duennen Vorteilen
+        (PF um 1.0) entscheidet allein sie ueber Plus oder Minus
     """
     if not candles or len(candles) < warmup + 30:
         return {"error": f"Zu wenige Kerzen: {len(candles) if candles else 0}"}
@@ -319,7 +346,8 @@ def optimiere_parameter(candles: list, startkapital: float = 1000.0,
                 seq = trades_aus_signalen(candles, signale, sl, tp, min_conf)
                 if len(seq) < min_trades:
                     continue
-                res = simuliere_mm(seq, mm_modus, startkapital, sl, tp)
+                res = simuliere_mm(seq, mm_modus, startkapital, sl, tp,
+                                   asset=asset, resolution=resolution)
                 res.pop("equity_curve", None)
                 benoetigt = round(100.0 / (1.0 + rr), 1)     # Break-even-Win-Rate
                 res.update({
