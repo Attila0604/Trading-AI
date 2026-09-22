@@ -33,7 +33,8 @@ from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
                     STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT,
                     DD_PAUSE_PCT, DD_VORSICHT_PCT, DD_VORSICHT_FAKTOR,
                     MAX_EXPOSURE_PCT, MAX_OFFENE_TRADES, EIN_TRADE_PRO_ASSET,
-                    jetzt)
+                    MAX_GLEICHE_RICHTUNG, FINANZIERUNG_AN, FINANZIERUNG_SAETZE,
+                    FINANZIERUNG_STANDARD, jetzt)
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +64,9 @@ COLUMNS = [
     "R:R", "Entry-Price", "Aktuell", "P&L", "Status",
     "Geöffnet am", "Geschlossen am", "Zusammenfassung", "Score", "Strategie",
     "MM-Modus", "MM-Begründung",
-    "BE-Seit",   # Zeitpunkt, ab dem der Break-even-Stop aktiv ist ("" = nicht aktiv)
+    "BE-Seit",       # Zeitpunkt, ab dem der nachgezogene Stop aktiv ist ("" = nicht aktiv)
+    "BE-Stop",       # Preisniveau des nachgezogenen Stops
+    "Finanzierung",  # Übernacht-Kosten in EUR, beim Schließen abgezogen
 ]
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -181,6 +184,46 @@ def _parse_zeit(wert) -> Optional[datetime]:
 
 def _norm_asset(a) -> str:
     return str(a or "").strip().upper().replace(" ", "")
+
+
+def _ist_long(action) -> bool:
+    return str(action or "").strip().lower() in ("buy", "long")
+
+
+def finanzierungskosten(einsatz: float, sl_pct: float, asset: str,
+                        geoeffnet, geschlossen=None) -> float:
+    """
+    Übernacht-Finanzierung (CFD-Swap) in EUR für die gehaltene Zeit.
+
+    Die Kosten fallen auf das NOMINALE Volumen an, nicht auf den Einsatz:
+    der Einsatz ist nur das Risiko (= Verlust bei SL), das tatsächlich
+    bewegte Volumen ist Einsatz / SL%. Bei 20 EUR Einsatz und 2% Stop
+    sind das 1000 EUR Nominal - über zwei Wochen läppert sich das.
+
+    Nebeneffekt der weiteren ATR-Stops: größerer SL% -> kleineres Nominal
+    -> WENIGER Finanzierung. Weite Stops sind hier also doppelt sinnvoll.
+    """
+    if not FINANZIERUNG_AN:
+        return 0.0
+    try:
+        einsatz = float(einsatz or 0)
+        sl_pct  = float(sl_pct or 0)
+        if einsatz <= 0 or sl_pct <= 0:
+            return 0.0
+        start = _parse_zeit(geoeffnet)
+        ende  = _parse_zeit(geschlossen) or jetzt()
+        if start is None:
+            return 0.0
+        tage = (ende - start).total_seconds() / 86400
+        if tage <= 0:
+            return 0.0
+        # Gegen kaputte Zeitstempel: nie mehr als ein Jahr berechnen
+        tage = min(tage, 365.0)
+        nominal = einsatz / (sl_pct / 100.0)
+        satz    = FINANZIERUNG_SAETZE.get(str(asset or "").strip(), FINANZIERUNG_STANDARD)
+        return round(nominal * satz / 100.0 * tage, 2)
+    except (ValueError, TypeError, ZeroDivisionError):
+        return 0.0
 
 
 def pnl_aus_preis(einsatz: float, entry: float, exit_price: float,
@@ -397,6 +440,7 @@ def _risiko_aus_stats(stats: dict) -> dict:
             "max_exposure_pct":    MAX_EXPOSURE_PCT,
             "max_offene_trades":   MAX_OFFENE_TRADES,
             "ein_trade_pro_asset": EIN_TRADE_PRO_ASSET,
+            "max_gleiche_richtung": MAX_GLEICHE_RICHTUNG,
         },
     }
 
@@ -425,15 +469,29 @@ def signal_oeffnen(signal: dict, einsatz_faktor: float = 1.0) -> dict:
         log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
         return {"abgelehnt": grund, "asset": asset, "stufe": risiko["stufe"]}
 
+    offene_alle = [t for t in trades if t.get("Status") == "offen"]
+
     if EIN_TRADE_PRO_ASSET:
-        offene_gleich = [t for t in trades if t.get("Status") == "offen"
-                         and _norm_asset(t.get("Asset")) == _norm_asset(asset)]
+        offene_gleich = [t for t in offene_alle
+                         if _norm_asset(t.get("Asset")) == _norm_asset(asset)]
         if offene_gleich:
             ids = ", ".join(str(t.get("ID")) for t in offene_gleich)
             richtung = "/".join(sorted({str(t.get("Richtung", "")) for t in offene_gleich}))
             grund = f"{asset} bereits offen ({ids}, {richtung})"
             log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
             return {"abgelehnt": grund, "asset": asset, "stufe": "ASSET_OFFEN"}
+
+    # ── Korrelations-Deckel ───────────────────────────────────────────
+    # Vier Assets in dieselbe Richtung sind EINE Wette mit vier Tickets.
+    if MAX_GLEICHE_RICHTUNG > 0:
+        neu_long = _ist_long(signal.get("action") or signal.get("direction"))
+        gleiche  = sum(1 for t in offene_alle if _ist_long(t.get("Action")) == neu_long)
+        if gleiche >= MAX_GLEICHE_RICHTUNG:
+            wort  = "LONG" if neu_long else "SHORT"
+            grund = f"schon {gleiche} offene {wort}-Positionen (Limit {MAX_GLEICHE_RICHTUNG}) - Klumpenrisiko"
+            log.warning(f"🛡️ Trade {asset} abgelehnt: {grund}")
+            return {"abgelehnt": grund, "asset": asset, "stufe": "RICHTUNG_VOLL"}
+    # ──────────────────────────────────────────────────────────────────
 
     faktor = max(0.0, min(1.0, float(einsatz_faktor))) * float(risiko["einsatz_faktor"])
     if faktor <= 0:
@@ -558,29 +616,58 @@ def trade_schliessen(trade_id: str, ergebnis: str, pnl_override: Optional[float]
     else:                       # "breakeven", "abgebrochen"
         pnl = 0.0
 
+    zu = jetzt()
+
+    # ── Übernacht-Finanzierung abziehen ──────────────────────────────
+    # Abgebrochene Trades (nie wirklich am Markt) bleiben kostenfrei.
+    kosten = 0.0
+    if ergebnis != "abgebrochen":
+        kosten = finanzierungskosten(
+            _safe_float(trade.get("Einsatz")), _safe_float(trade.get("SL %")),
+            trade.get("Asset"), trade.get("Geöffnet am"), zu.isoformat(),
+        )
+        pnl -= kosten
+        # Ehrliche Statistik: frisst die Finanzierung den Treffer auf, war es
+        # wirtschaftlich KEIN Gewinn - sonst zeigt die Win-Rate mehr, als die
+        # Kapitalkurve hergibt.
+        if ergebnis == "gewonnen" and pnl < 0:
+            log.info(f"↩️ {trade_id}: Ziel erreicht, aber €{kosten:.2f} Finanzierung → zählt als Verlust")
+            ergebnis = "verloren"
+    # ─────────────────────────────────────────────────────────────────
+
     trades[idx]["Status"] = ergebnis
     trades[idx]["P&L"] = round(pnl, 2)
-    trades[idx]["Geschlossen am"] = jetzt().isoformat()
+    trades[idx]["Finanzierung"] = kosten
+    trades[idx]["Geschlossen am"] = zu.isoformat()
 
     _speichere_trades(trades)
 
     emoji = {"gewonnen": "✅", "verloren": "❌", "breakeven": "⚖️"}.get(ergebnis, "🗑️")
-    log.info(f"{emoji} Trade {trade_id} | {ergebnis.upper()} | P&L: {'+' if pnl >= 0 else ''}€{pnl:.2f}")
+    zusatz = f" (inkl. €{kosten:.2f} Finanzierung)" if kosten else ""
+    log.info(f"{emoji} Trade {trade_id} | {ergebnis.upper()} | P&L: {'+' if pnl >= 0 else ''}€{pnl:.2f}{zusatz}")
 
     return trades[idx]
 
 
 @_synchronized
-def breakeven_aktivieren(trade_id: str) -> dict:
-    """Zieht den Stop eines offenen Trades auf den Entry (Break-even-Stop)."""
+def breakeven_aktivieren(trade_id: str, stop_preis: float) -> dict:
+    """
+    Zieht den Stop eines offenen Trades nach und merkt sich das Preisniveau.
+
+    Der Stop liegt bewusst NICHT exakt auf dem Entry, sondern ein Stück im
+    Gewinn (BREAKEVEN_STOP_R): genau auf dem Entry wird er von jedem normalen
+    Zurücklaufen sofort ausgelöst - vier von vier Auslösungen endeten so bei 0.
+    """
     trades = _lade_trades()
     for t in trades:
         if t.get("ID") == trade_id and t.get("Status") == "offen":
             if str(t.get("BE-Seit") or "").strip():
                 return t
             t["BE-Seit"] = jetzt().isoformat()
+            t["BE-Stop"] = round(float(stop_preis), 5)
             _speichere_trades(trades)
-            log.info(f"⚖️ Break-even-Stop aktiv: {trade_id} | {t.get('Asset')} | Entry {t.get('Entry-Price')}")
+            log.info(f"⚖️ Stop nachgezogen: {trade_id} | {t.get('Asset')} | "
+                     f"Entry {t.get('Entry-Price')} → Stop {t['BE-Stop']}")
             return t
     log.warning(f"Break-even: Trade {trade_id} nicht gefunden oder nicht offen")
     return {}
