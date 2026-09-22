@@ -485,7 +485,8 @@ function updateMoneyManagement(stats, kapital, startkapital, risiko) {
   const stufeSub = document.getElementById("mm-stufe-sub");
   if (stufeSub) {
     const lim = r.limits || {};
-    stufeSub.textContent = `Offen: ${(r.offene_exposure_pct||0).toFixed(1)}% / ${lim.max_exposure_pct||"–"}% · ${r.offen||0} / ${lim.max_offene_trades||"–"} Trades`;
+    stufeSub.textContent = `Offen: ${(r.offene_exposure_pct||0).toFixed(1)}% / ${lim.max_exposure_pct||"–"}% · ${r.offen||0} / ${lim.max_offene_trades||"–"} Trades`
+      + (lim.max_gleiche_richtung ? ` · max ${lim.max_gleiche_richtung} je Richtung` : "");
   }
 
   const riskBar = document.getElementById("mm-risk-bar");
@@ -681,7 +682,9 @@ function renderOffeneTrades(trades){
         slPreis = fmtP(entry * (1 + slPct/100));
         tpPreis = fmtP(entry * (1 - tpPct/100));
       }
-      if(beAktiv) slPreis = `<span title="Break-even-Stop aktiv: Stop liegt am Entry">⚖️ ${fmtP(entry)}</span>`;
+      // Nachgezogener Stop liegt jetzt IM Gewinn, nicht mehr exakt am Entry
+      const beStop = parseFloat(tv(t,"BE-Stop","be_stop")||0) || entry;
+      if(beAktiv) slPreis = `<span title="Stop nachgezogen — dieser Trade kann nicht mehr im Minus enden">⚖️ ${fmtP(beStop)}</span>`;
     }
 
     return`<tr>
