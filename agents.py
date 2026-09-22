@@ -2,6 +2,14 @@ import os, json, logging
 from anthropic import Anthropic
 
 log = logging.getLogger(__name__)
+
+# Kerzen-Basis für die Analyse. Wochen-Haltedauer -> Tageskerzen.
+# Über Env umstellbar, falls doch kurzfristiger gehandelt werden soll.
+KERZEN_AUFLOESUNG = os.getenv("KERZEN_AUFLOESUNG", "DAY").strip() or "DAY"
+try:
+    KERZEN_ANZAHL = int(os.getenv("KERZEN_ANZAHL", "300"))
+except (ValueError, TypeError):
+    KERZEN_ANZAHL = 300
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 # Asset → Capital.com Epic Mapping
@@ -296,7 +304,10 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     loop       = asyncio.get_event_loop()
 
     # ── 0. ECHTE MARKTDATEN HOLEN ──
-    log.info("[Market Data] Hole 4H-OHLC-Kerzen für Tech Analyst...")
+    # TAGES-Kerzen: die Haltedauer liegt bei Wochen, nicht Stunden. Auf
+    # 4H-Kerzen reagieren die Indikatoren auf Bewegungen, die für einen
+    # Wochen-Trade reines Rauschen sind.
+    log.info("[Market Data] Hole Tages-OHLC-Kerzen für Tech Analyst...")
     # Vorhandenen Client mitbenutzen statt eine ZWEITE Sitzung aufzubauen.
     # Capital.com erlaubt nur eine Anmeldung pro Sekunde.
     capital = capital_client or CapitalClient()
@@ -306,7 +317,7 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     market_data = {}
     for asset in assets:
         epic = EPIC_MAP.get(asset, asset.replace("/", ""))
-        candles = await capital.get_historical_prices(epic, "HOUR_4", 200)
+        candles = await capital.get_historical_prices(epic, KERZEN_AUFLOESUNG, KERZEN_ANZAHL)
         if candles:
             market_data[asset] = candles
         else:
@@ -343,6 +354,7 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
     # echte Zahlen und würde immer auf seinen Basiswert zurückfallen.
     from indicators import calculate_all_indicators
     volatility = {}
+    atr_werte  = {}
     for asset, candles in market_data.items():
         try:
             if candles and len(candles) >= 30:
@@ -350,10 +362,15 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
                 bb = ind.get("bollinger") or {}
                 if bb.get("width_pct") is not None:
                     volatility[asset] = bb["width_pct"]
+                # ATR% je Asset - Grundlage für volatilitätsabhängige SL/TP
+                if ind.get("atrPct") is not None:
+                    atr_werte[asset] = ind["atrPct"]
         except Exception as e:
             log.warning(f"[Volatilität] {asset}: {e}")
     result["volatility"] = volatility
+    result["atr_pct"]    = atr_werte
     log.info(f"[Volatilität] {volatility}")
+    log.info(f"[ATR%] {atr_werte}")
 
     log.info(f"PIPELINE FERTIG | Score: {result.get('sessionScore')}/100 | Signale: {len([d for d in result.get('decisions',[]) if d.get('action')!='hold'])}")
     return result
