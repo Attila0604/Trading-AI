@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.1 🤖📈
+# Trading Multi-Agent v3.3 🤖📈
 
 KI-gestütztes Trading-System mit 6 Claude-Agenten, Capital.com API-Integration und WhatsApp-Benachrichtigungen.
 
@@ -225,6 +225,30 @@ Manuelles Schließen im Dashboard: **💱 Markt** = zum aktuellen Kurs (echter P
 API: `GET /demo/trade/{id}/markt` (Vorschau), `POST /demo/trade/{id}/schliessen?ergebnis=markt|gewonnen|verloren|breakeven`.
 
 Status: `GET /demo/risiko`, außerdem in `/status` und `/selftest`.
+
+### Signalquelle: Regeln + KI-Veto (v3.3)
+
+Die Handelsrichtung kommt aus festen Regeln (`indicators.py`, exakt dieselbe Logik
+wie `backtest.py`). Die KI darf einen Trade nur noch **blockieren**, wenn ein
+konkretes Ereignis ansteht (Fed/EZB, CPI, NFP …) oder die Nachrichtenlage klar
+dagegen spricht. Vorschlagen oder umdrehen kann sie nichts.
+
+Jedes blockierte Signal wird als **V-Zeile** (`V0001` …) ins Excel geschrieben und
+im 4-Stunden-Check mitverfolgt, als wäre es gehandelt worden, aber ohne Kapital.
+Das Dashboard vergleicht das Ø-Ergebnis in R von ausgeführten und blockierten
+Signalen. Ab je 10 abgeschlossenen gibt es ein Urteil, ob das Veto hilft.
+
+Assets mit offenem Trade werden gar nicht erst analysiert. Gibt es kein
+Regel-Signal, fällt der KI-Aufruf ganz weg.
+
+| Env-Variable | Default | Wirkung |
+|---|---|---|
+| `SIGNAL_QUELLE` | regeln | `regeln` = Regeln + KI-Veto, `ki` = alter Ablauf mit sechs Agenten |
+| `AGENT_MODEL` | claude-haiku-4-5-20251001 | Modell für alle KI-Aufrufe |
+| `REGEL_MIN_CONFLUENCE` | 6 | Mindest-Confluence eines Regel-Signals (wie im Backtest) |
+
+Hinweis: Auch Regel-Signale laufen durch den Konfidenz-Filter im Dashboard
+(Konfidenz = Confluence × 10). Min. Konfidenz 60 % entspricht Confluence 6.
 
 ### Neuer Abschnitt (Tracker-Reset)
 
