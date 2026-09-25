@@ -573,13 +573,13 @@ async function ladeDemo(){
   // Money Management aktualisieren
   updateMoneyManagement(stats, kapital, start, data.risiko);
 
-  renderDemoStats(stats);
+  renderDemoStats(stats, data.signalvergleich);
   renderChart(data.tages_snapshots||[]);
   renderOffeneTrades(data.offene_trades||[]);
   renderLetzteTrades(data.letzte_trades||[]);
 }
 
-function renderDemoStats(stats){
+function renderDemoStats(stats, sv){
   const wrap=document.getElementById("demo-stats-wrap");
   const rows=[
     ["Gesamt Trades",stats.gesamt_trades||0,"var(--text)"],
@@ -594,6 +594,16 @@ function renderDemoStats(stats){
     ["Max Drawdown",(stats.max_drawdown||0).toFixed(2)+"%","var(--orange)"],
     ["ROI",(stats.roi>=0?"+":"")+(stats.roi||0).toFixed(2)+"%",(stats.roi||0)>=0?"var(--green)":"var(--red)"],
   ];
+  // KI-Veto-Auswertung: laufen blockierte Signale schlechter als ausgeführte?
+  if(sv && (sv.vetos_gesamt||0) > 0){
+    const r=(x)=>x===null||x===undefined?"—":(x>=0?"+":"")+Number(x).toFixed(2)+" R";
+    rows.push(
+      ["⛔ KI-Vetos",`${sv.vetos_gesamt} (${sv.vetos_offen} laufen)`,"var(--gold)"],
+      ["…wären gewonnen / verloren",`${sv.vetos_waeren_gewonnen} / ${sv.vetos_waeren_verloren}`,"var(--muted)"],
+      ["Ø ausgeführt / blockiert",`${r(sv.regel_schnitt_r)} / ${r(sv.veto_schnitt_r)}`,"var(--cyan)"],
+      ["Urteil",sv.urteil||"—","var(--muted)"]
+    );
+  }
   wrap.innerHTML=rows.map(([l,v,c])=>`
     <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033">
       <span style="color:var(--muted);font-size:10px">${l}</span>
