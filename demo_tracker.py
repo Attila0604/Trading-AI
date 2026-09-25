@@ -67,6 +67,9 @@ COLUMNS = [
     "BE-Seit",       # Zeitpunkt, ab dem der nachgezogene Stop aktiv ist ("" = nicht aktiv)
     "BE-Stop",       # Preisniveau des nachgezogenen Stops
     "Finanzierung",  # Übernacht-Kosten in EUR, beim Schließen abgezogen
+    "Signalquelle",  # "regeln" (Regeln + KI-Veto) oder "ki" (alter Ablauf)
+    "Veto-Grund",    # nur bei V-Zeilen: warum die KI blockiert hat
+    "Veto-P&L",      # nur bei V-Zeilen: was der blockierte Trade gebracht HÄTTE
 ]
 
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -186,6 +189,72 @@ def _norm_asset(a) -> str:
     return str(a or "").strip().upper().replace(" ", "")
 
 
+def _ist_veto(t: dict) -> bool:
+    """V-Zeilen = von der KI blockierte Signale. Reines Schattenprotokoll:
+    kein Kapital, kein Risiko, zählen in KEINER Trade-Statistik."""
+    return str(t.get("ID", "")).startswith("V") or str(t.get("Status", "")).startswith("veto")
+
+
+def _naechste_id(trades: list, praefix: str) -> str:
+    nr = 0
+    for t in trades:
+        tid = str(t.get("ID", ""))
+        if tid.startswith(praefix) and tid[1:].isdigit():
+            nr = max(nr, int(tid[1:]))
+    return f"{praefix}{nr + 1:04d}"
+
+
+def _r_wert(pnl, einsatz) -> Optional[float]:
+    """Ergebnis in R = Vielfaches des riskierten Einsatzes (größenunabhängig)."""
+    e = _safe_float(einsatz)
+    return (_safe_float(pnl) / e) if e > 0 else None
+
+
+def _signalvergleich(echte: list, vetos: list) -> dict:
+    """
+    Die eigentliche Frage: Bringt das KI-Veto etwas?
+    Verglichen wird das Ø-Ergebnis in R der AUSGEFÜHRTEN Regel-Trades mit dem
+    der BLOCKIERTEN. Schneiden die blockierten schlechter ab, filtert die KI
+    wirklich schlechte Trades heraus. Schneiden sie gleich oder besser ab,
+    kostet das Veto nur Gelegenheiten.
+    """
+    regel_zu = [t for t in echte if t.get("Signalquelle") == "regeln"
+                and t.get("Status") in ("gewonnen", "verloren", "breakeven")]
+    veto_zu  = [v for v in vetos if v.get("Status") in ("veto_gewonnen", "veto_verloren")]
+
+    def schnitt(zeilen, key):
+        rs = [r for r in (_r_wert(z.get(key), z.get("Einsatz")) for z in zeilen) if r is not None]
+        return round(sum(rs) / len(rs), 2) if rs else None
+
+    regel_r = schnitt(regel_zu, "P&L")
+    veto_r  = schnitt(veto_zu, "Veto-P&L")
+    MIN = 10
+    if len(regel_zu) < MIN or len(veto_zu) < MIN:
+        urteil = (f"Noch zu wenig Daten: {len(veto_zu)}/{MIN} abgeschlossene Vetos, "
+                  f"{len(regel_zu)}/{MIN} abgeschlossene Regel-Trades")
+    elif veto_r < regel_r - 0.1:
+        urteil = "Blockierte Signale laufen schlechter als ausgeführte → das KI-Veto hilft"
+    elif veto_r > regel_r + 0.1:
+        urteil = "Blockierte Signale laufen BESSER als ausgeführte → das KI-Veto schadet"
+    else:
+        urteil = "Kein erkennbarer Unterschied → das KI-Veto bringt bisher nichts"
+
+    return {
+        "regel_trades_abgeschlossen": len(regel_zu),
+        "regel_schnitt_r":            regel_r,
+        "regel_pnl":                  round(sum(_safe_float(t.get("P&L")) for t in regel_zu), 2),
+        "vetos_gesamt":               len(vetos),
+        "vetos_offen":                sum(1 for v in vetos if v.get("Status") == "veto_offen"),
+        "vetos_abgeschlossen":        len(veto_zu),
+        "vetos_waeren_gewonnen":      sum(1 for v in veto_zu if _safe_float(v.get("Veto-P&L")) > 0),
+        "vetos_waeren_verloren":      sum(1 for v in veto_zu if _safe_float(v.get("Veto-P&L")) < 0),
+        "veto_schnitt_r":             veto_r,
+        # negativ = diese Summe hätten die blockierten Trades VERLOREN -> KI hat sie gespart
+        "veto_bilanz":                round(sum(_safe_float(v.get("Veto-P&L")) for v in veto_zu), 2),
+        "urteil":                     urteil,
+    }
+
+
 def _ist_long(action) -> bool:
     return str(action or "").strip().lower() in ("buy", "long")
 
@@ -298,7 +367,10 @@ def _drawdowns(kurve: list) -> tuple:
 @_synchronized
 def get_statistik() -> dict:
     """Liest Statistik direkt aus Excel."""
-    trades = _lade_trades()
+    alle   = _lade_trades()
+    vetos  = [t for t in alle if _ist_veto(t)]
+    trades = [t for t in alle if not _ist_veto(t)]   # nur echte Trades
+    vergleich = _signalvergleich(trades, vetos)
 
     if not trades:
         leer = {
@@ -316,6 +388,7 @@ def get_statistik() -> dict:
             "tages_snapshots": [],
             "offene_trades": [],
             "letzte_trades": [],
+            "signalvergleich": vergleich,
         }
         leer["risiko"] = _risiko_aus_stats(leer)
         return leer
@@ -390,6 +463,7 @@ def get_statistik() -> dict:
         "kapitalverlauf": kurve,
         "offene_trades": offene,
         "letzte_trades": letzte,
+        "signalvergleich": vergleich,
     }
     stats["risiko"] = _risiko_aus_stats(stats)
     return stats
@@ -547,7 +621,8 @@ def signal_oeffnen(signal: dict, einsatz_faktor: float = 1.0) -> dict:
     sl_absolut = round(einsatz, 2)
     tp_absolut = round(einsatz * rr, 2)
 
-    trade_id = f"T{len(trades) + 1:04d}"
+    # Nur T-Zeilen zählen - V-Zeilen (Vetos) dürfen keine Nummern verbrauchen
+    trade_id = _naechste_id(trades, "T")
     now = jetzt()
 
     neue_zeile = {
@@ -575,6 +650,7 @@ def signal_oeffnen(signal: dict, einsatz_faktor: float = 1.0) -> dict:
         "Strategie": signal.get("strategyUsed", ""),
         "MM-Modus": mm_modus_genutzt,
         "MM-Begründung": mm_begruendung,
+        "Signalquelle": signal.get("signalQuelle") or "ki",
     }
 
     trades.append(neue_zeile)
@@ -711,6 +787,88 @@ def tracker_zuruecksetzen() -> dict:
 
 
 @_synchronized
+def veto_protokollieren(signal: dict) -> dict:
+    """
+    Schreibt ein von der KI blockiertes Signal als V-Zeile ins Excel.
+    Kein Kapital, kein Risiko, keine Wirkung auf Schutz oder Statistik -
+    der 4h-Check verfolgt nur, was der Trade gebracht HÄTTE.
+    Einsatz wird genauso berechnet wie bei einem echten Trade, damit das
+    Ergebnis in R direkt vergleichbar ist.
+    """
+    alle  = _lade_trades()
+    stats = get_statistik()
+    sl_pct = _validiere_prozent(signal.get("stopLoss"), SL_PROZENT)
+    tp_pct = _validiere_prozent(signal.get("takeProfit"), TP_PROZENT)
+    mm = berechne_einsatz(
+        modus=signal.get("mm_modus", MM_MODUS), kapital=stats["aktuelles_kapital"],
+        ctx={"confidence": signal.get("confidence", 0),
+             "win_rate": stats["statistik"]["win_rate"],
+             "gesamt_abgeschlossen": stats["statistik"]["gewonnen"] + stats["statistik"]["verloren"],
+             "sl_pct": sl_pct, "tp_pct": tp_pct,
+             "volatility_pct": signal.get("volatility_pct", 0),
+             "letzte_trades": stats.get("letzte_trades", [])},
+    )
+    einsatz = round(float(mm["einsatz"]), 2)
+    rr  = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
+    now = jetzt()
+    grund = str(signal.get("vetoGrund") or "").strip()
+    if signal.get("vetoEreignis"):
+        grund += f" ({signal['vetoEreignis']})"
+    zeile = {
+        "Datum": now.strftime("%d.%m.%Y"), "Uhrzeit": now.strftime("%H:%M:%S"),
+        "ID": _naechste_id(alle, "V"),
+        "Asset": str(signal.get("asset", "")).strip(),
+        "Action": str(signal.get("action", "")).upper(),
+        "Richtung": str(signal.get("direction", "")).upper(),
+        "Konfidenz": int(_safe_float(signal.get("confidence", 0))),
+        "Einsatz": einsatz, "SL %": sl_pct, "TP %": tp_pct,
+        "SL Absolut": einsatz, "TP Absolut": round(einsatz * rr, 2), "R:R": rr,
+        "Entry-Price": _safe_float(signal.get("entry_price", 0)),
+        "Aktuell": 0.0, "P&L": 0.0, "Status": "veto_offen",
+        "Geöffnet am": now.isoformat(), "Geschlossen am": "",
+        "Zusammenfassung": signal.get("summary", ""),
+        "Score": signal.get("sessionScore", 0),
+        "Strategie": signal.get("strategyUsed", ""),
+        "MM-Modus": mm["modus"], "MM-Begründung": "hypothetisch (Veto)",
+        "Signalquelle": signal.get("signalQuelle") or "regeln",
+        "Veto-Grund": grund[:250], "Veto-P&L": 0.0,
+    }
+    alle.append(zeile)
+    _speichere_trades(alle)
+    log.info(f"⛔ Veto protokolliert: {zeile['ID']} | {zeile['Asset']} {zeile['Action']} | "
+             f"Entry {zeile['Entry-Price']} | Grund: {grund[:80]}")
+    return zeile
+
+
+@_synchronized
+def veto_schliessen(veto_id: str, ergebnis: str, pnl: float, kurs: float = 0.0) -> dict:
+    """Schließt eine V-Zeile rein rechnerisch (Finanzierung wie bei echten Trades)."""
+    alle = _lade_trades()
+    for t in alle:
+        if t.get("ID") == veto_id and t.get("Status") == "veto_offen":
+            zu = jetzt()
+            kosten = finanzierungskosten(_safe_float(t.get("Einsatz")), _safe_float(t.get("SL %")),
+                                         t.get("Asset"), t.get("Geöffnet am"), zu.isoformat())
+            netto = round(float(pnl) - kosten, 2)
+            if ergebnis == "gewonnen" and netto < 0:
+                ergebnis = "verloren"
+            t["Status"] = f"veto_{ergebnis}"
+            t["Veto-P&L"] = netto
+            t["Finanzierung"] = kosten
+            t["Aktuell"] = round(float(kurs or 0), 5)
+            t["Geschlossen am"] = zu.isoformat()
+            _speichere_trades(alle)
+            log.info(f"⛔ Veto {veto_id} ausgewertet: hätte {'+' if netto >= 0 else ''}€{netto:.2f} gebracht")
+            return t
+    return {}
+
+
+@_synchronized
+def get_offene_vetos() -> list:
+    return [t for t in _lade_trades() if t.get("Status") == "veto_offen"]
+
+
+@_synchronized
 def get_offene_trades() -> list:
     """Gibt alle offenen Trades zurück."""
     trades = _lade_trades()
@@ -740,6 +898,11 @@ def generiere_tages_report() -> str:
     verl = stats["statistik"]["verloren"]
     r = stats["risiko"]
     schutz = "🟢 normal" if r["stufe"] == "NORMAL" else f"🛡️ {r['stufe']}"
+    sv = stats.get("signalvergleich", {})
+    veto_zeile = ""
+    if sv.get("vetos_gesamt"):
+        veto_zeile = (f"⛔ KI-Vetos: {sv['vetos_gesamt']} ({sv['vetos_offen']} laufen noch, "
+                      f"{sv['vetos_waeren_gewonnen']} wären gewonnen, {sv['vetos_waeren_verloren']} verloren)\n")
 
     return (
         f"📊 *TRADING DEMO - TAGESREPORT*\n"
@@ -753,7 +916,8 @@ def generiere_tages_report() -> str:
         f"🔄 Offen: *{offen}* (€{r['offene_exposure']:.0f} = {r['offene_exposure_pct']:.1f}%)\n"
         f"📉 Drawdown: aktuell {r['aktueller_drawdown']:.1f}% | max {r['max_drawdown']:.1f}%\n"
         f"🛡️ Schutz: {schutz}\n"
+        f"{veto_zeile}"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"📈 Startkapital: €{start:.2f}\n"
-        f"🤖 _Trading Multi-Agent v3.1_"
+        f"🤖 _Trading Multi-Agent v3.3 · Regeln + KI-Veto_"
     )
