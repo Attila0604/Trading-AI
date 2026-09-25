@@ -1,4 +1,4 @@
-# Trading Multi-Agent v3.1 - Update 17.09.2026 (Portfolio-Schutz im Backend)
+# Trading Multi-Agent v3.3 - Update 25.09.2026 (Regeln + KI-Veto)
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -13,7 +13,7 @@ from config import (jetzt, utc_nach_lokal, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
                     BREAKEVEN_STOP_R, VOLA_ADAPTIV, ATR_SL_FAKTOR, ATR_TP_FAKTOR,
                     ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
 
-from agents import run_pipeline
+from agents import run_pipeline, SIGNAL_QUELLE, AGENT_MODEL
 from capital_client import CapitalClient
 from excel_tracker import ExcelTracker
 from whatsapp import send_whatsapp
@@ -21,6 +21,7 @@ from demo_tracker import (
     signal_oeffnen, trade_schliessen, tages_snapshot,
     get_offene_trades, get_statistik, generiere_tages_report, pnl_aus_preis,
     get_risiko_status, breakeven_aktivieren, tracker_zuruecksetzen,
+    veto_protokollieren, veto_schliessen, get_offene_vetos,
 )
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi, optimiere_parameter
@@ -171,10 +172,85 @@ def tages_report_job():
 
 def ergebnis_check_job():
     offene = get_offene_trades()
-    if not offene:
-        return
-    log.info(f"🔍 Ergebnis-Check: {len(offene)} offene Trades")
-    asyncio.run(_check_trade_results(offene))
+    if offene:
+        log.info(f"🔍 Ergebnis-Check: {len(offene)} offene Trades")
+        asyncio.run(_check_trade_results(offene))
+    # Blockierte Signale mitverfolgen: was HÄTTEN sie gebracht?
+    vetos = get_offene_vetos()
+    if vetos:
+        log.info(f"⛔ Veto-Schattencheck: {len(vetos)} blockierte Signal(e)")
+        asyncio.run(_pruefe_vetos(vetos))
+
+
+async def _pruefe_vetos(vetos: list):
+    """
+    Rechnet für jedes blockierte Signal aus, ob es SL oder TP getroffen hätte -
+    mit derselben Kerzen-Logik wie bei echten Trades (Stundenkerzen seit
+    Eröffnung, beide in einer Kerze -> konservativ SL, Timeout zum Marktpreis).
+    Einziger Unterschied: kein nachgezogener Stop. Keine Wirkung auf Kapital.
+    """
+    if not capital.is_connected():
+        await capital.connect()
+    for v in vetos:
+        vid = v.get("ID", "?")
+        try:
+            asset  = str(v.get("Asset", "")).strip()
+            entry  = float(v.get("Entry-Price", 0) or 0)
+            action = str(v.get("Action", "buy")).lower()
+            sl_pct = float(v.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT)
+            tp_pct = float(v.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT)
+            einsatz = float(v.get("Einsatz", 0) or 0)
+            if entry <= 0 or einsatz <= 0:
+                continue
+            try:
+                geoeffnet = datetime.fromisoformat(str(v.get("Geöffnet am", "")))
+            except Exception:
+                continue
+            alter_std = (jetzt() - geoeffnet).total_seconds() / 3600
+            long_ = action in ("buy", "long")
+            sl_level = entry * (1 - sl_pct / 100) if long_ else entry * (1 + sl_pct / 100)
+            tp_level = entry * (1 + tp_pct / 100) if long_ else entry * (1 - tp_pct / 100)
+
+            epic  = asset_to_epic(asset)
+            preis = await capital.get_prices(epic)
+            kurs  = float((preis.get("bid") if long_ else preis.get("ask")) or preis.get("bid") or preis.get("ask") or 0)
+            try:
+                kerzen = await capital.get_historical_prices(epic, "HOUR", 200)
+            except Exception:
+                kerzen = []
+
+            treffer = None
+            for c in kerzen:
+                try:
+                    ct = utc_nach_lokal(datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0]))
+                except Exception:
+                    continue
+                if ct < geoeffnet:
+                    continue
+                hi, lo = c.get("high"), c.get("low")
+                if hi is None or lo is None:
+                    continue
+                sl_hit = lo <= sl_level if long_ else hi >= sl_level
+                tp_hit = hi >= tp_level if long_ else lo <= tp_level
+                if sl_hit:
+                    treffer = "verloren"; break
+                if tp_hit:
+                    treffer = "gewonnen"; break
+            if treffer is None and kurs > 0:
+                if (long_ and kurs <= sl_level) or (not long_ and kurs >= sl_level):
+                    treffer = "verloren"
+                elif (long_ and kurs >= tp_level) or (not long_ and kurs <= tp_level):
+                    treffer = "gewonnen"
+
+            if treffer == "gewonnen":
+                veto_schliessen(vid, "gewonnen", einsatz * (tp_pct / sl_pct), tp_level)
+            elif treffer == "verloren":
+                veto_schliessen(vid, "verloren", -einsatz, sl_level)
+            elif alter_std > MAX_TRADE_TAGE * 24 and kurs > 0:
+                pnl = pnl_aus_preis(einsatz, entry, kurs, action, sl_pct, tp_pct)
+                veto_schliessen(vid, "gewonnen" if pnl > 0 else "verloren", pnl, kurs)
+        except Exception as e:
+            log.error(f"Veto-Schattencheck Fehler [{vid}]: {e}")
 
 
 async def _check_trade_results(offene: list):
@@ -488,11 +564,14 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         wochenende = ist_wochenende()
         log.info(f"PIPELINE START | {ts} | {req.strategy} | {req.assets} | Wochenende: {wochenende}")
 
+        # Assets mit offenem Trade gar nicht erst analysieren (spart KI-Aufrufe)
+        offen_assets = sorted({str(t.get("Asset", "")).strip() for t in get_offene_trades()})
         result = await run_pipeline(
             assets=req.assets, strategy=req.strategy,
             risk_pct=req.risk_pct, sl_pct=req.sl_pct,
             tp_pct=req.tp_pct, position_size=req.position_size,
             capital_client=capital,   # eine Sitzung statt zwei
+            skip_assets=offen_assets,
         )
 
        # ── SL/TP festlegen — die KI entscheidet NICHT über Risk-Settings ──
@@ -513,6 +592,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 tp = sl * (ATR_TP_FAKTOR / ATR_SL_FAKTOR) if ATR_SL_FAKTOR > 0 else sl * 2
                 decision["stopLoss"]   = round(sl, 2)
                 decision["takeProfit"] = round(tp, 2)
+                decision["riskReward"] = round(tp / sl, 2) if sl > 0 else 0
                 sl_tp_log.append(f"{a}: ATR {atr_val:.2f}% → SL {sl:.2f}% / TP {tp:.2f}%")
             else:
                 decision["stopLoss"]   = active_config["sl_pct"]
@@ -533,6 +613,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         trades_geoeffnet = 0
         trades_übersprungen = 0
         trades_abgelehnt = []          # (asset, grund) - vom Portfolio-Schutz blockiert
+        vetos_protokolliert = []       # (asset, grund) - von der KI blockiert
 
         # ── Portfolio-Schutz (NEU): Drawdown, Exposure, offene Trades ─────────
         # Das war bisher NUR im Dashboard als Anzeige - das Backend hat trotzdem
@@ -574,7 +655,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
             asset = signal.get("asset", "")
 
-            if not risiko["neue_trades_erlaubt"]:
+            # Bei Veto wird trotz Portfolio-Sperre protokolliert (kostet nichts,
+            # und die Veto-Auswertung braucht jedes blockierte Signal)
+            if not risiko["neue_trades_erlaubt"] and not signal.get("veto"):
                 trades_abgelehnt.append((asset, risiko["stufe"]))
                 continue
 
@@ -610,6 +693,20 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 continue
             # ─────────────────────────────────────────────────────────────
 
+            # ── KI-Veto: nicht handeln, nur als Schatten-Trade mitschreiben ──
+            if signal.get("veto"):
+                veto_protokollieren({
+                    **signal,
+                    "entry_price":    entry_price,
+                    "strategyUsed":   result.get("strategyUsed", req.strategy),
+                    "mm_modus":       active_config["mm_modus"],
+                    "volatility_pct": vola_lookup.get(asset, 0),
+                    "sessionScore":   result.get("sessionScore", 0),
+                })
+                vetos_protokolliert.append((asset, signal.get("vetoGrund") or ""))
+                continue
+            # ─────────────────────────────────────────────────────────────
+
             demo_trade = signal_oeffnen({
                 **signal,
                 "entry_price":    entry_price,
@@ -635,13 +732,16 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         overview   = result.get("marketOverview", "")
         demo_stats = get_statistik()
 
+        quelle = result.get("signalQuelle", "ki")
         msg = (
             f"📊 *TRADING ANALYSE*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕐 {ts}\n"
             f"🎯 Score: *{score}/100*\n"
-            f"🔧 Strategie: *{req.strategy}*\n"
+            f"🔧 {'Regeln + KI-Veto' if quelle == 'regeln' else 'Strategie: *' + req.strategy + '*'}\n"
         )
+        if result.get("uebersprungen"):
+            msg += f"⏭ Trade offen, nicht analysiert: {', '.join(result['uebersprungen'])}\n"
 
         if wochenende:
             msg += f"📅 _Wochenende: nur BTC/ETH handelbar_\n"
@@ -660,6 +760,8 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             s_tp = float(s.get("takeProfit", active_config["tp_pct"]) or active_config["tp_pct"])
             s_atr = atr_lookup.get(s.get("asset", ""))
             atr_txt = f" _(ATR {s_atr:.2f}%)_" if s_atr else ""
+            if s.get("veto"):
+                arrow = "⛔ " + arrow
             msg  += (
                 f"{arrow} *{star}{s['asset']}* | {s['confidence']}%{skip}\n"
                 f"SL: {s_sl:.1f}% | TP: {s_tp:.1f}%{atr_txt}\n"
@@ -679,6 +781,10 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if risiko["stufe"] != "NORMAL":
             msg += (f"📉 DD aktuell {risiko['aktueller_drawdown']:.1f}% | offen "
                     f"{risiko['offene_exposure_pct']:.1f}% ({risiko['offen']} Trades)\n")
+        if vetos_protokolliert:
+            msg += f"⛔ *KI-Veto:* {len(vetos_protokolliert)} Signal(e) blockiert (werden mitverfolgt)\n"
+            for a, g in vetos_protokolliert[:4]:
+                msg += f"  • {a}: _{str(g)[:80]}_\n"
         msg += f"✅ Demo-Trades eröffnet: {trades_geoeffnet}\n"
 
         msg += (
@@ -914,6 +1020,10 @@ async def selftest():
         (f"aktiv: SL = {ATR_SL_FAKTOR:g} × Tages-ATR (Grenzen {ATR_SL_MIN_PCT:g}–{ATR_SL_MAX_PCT:g}%), "
          f"R:R {ATR_TP_FAKTOR/ATR_SL_FAKTOR:.1f}") if VOLA_ADAPTIV
         else f"AUS - fest {active_config['sl_pct']}% / {active_config['tp_pct']}%")
+    add("Signalquelle", True,
+        "Regeln bestimmen die Richtung, KI darf nur blockieren (Veto)" if SIGNAL_QUELLE == "regeln"
+        else "KI entscheidet die Richtung (alter Ablauf)")
+    add("KI-Modell", True, AGENT_MODEL)
     from config import FINANZIERUNG_AN, FINANZIERUNG_SAETZE
     add("Finanzierungskosten", True,
         ("aktiv: " + ", ".join(f"{k} {v:g}%/Tag" for k, v in list(FINANZIERUNG_SAETZE.items())[:4]))
@@ -1211,6 +1321,9 @@ async def status():
         "demo_win_rate":     demo["statistik"]["win_rate"],
         "wochenende":        ist_wochenende(),
         "risiko":            demo.get("risiko", {}),
+        "signal_quelle":     SIGNAL_QUELLE,
+        "agent_model":       AGENT_MODEL,
+        "signalvergleich":   demo.get("signalvergleich", {}),
         "server_zeit":       jetzt().isoformat(),
     }
 
