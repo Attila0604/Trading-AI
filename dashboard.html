@@ -778,7 +778,7 @@ async function schliesseDemo(id,ergebnis){
 }
 
 function excelDownload(){window.open("/excel-download","_blank");toast("Excel wird heruntergeladen...","ok");}
-async function reportSenden(){const r=await api("/demo/report/senden","POST");if(r&&r.status==="gesendet")toast("Report gesendet!","ok");else toast("Fehler","err");}
+async function reportSenden(){const r=await api("/demo/report/senden","POST");if(r&&r.status==="gesendet")toast("Report gesendet!","ok");else if(r&&r.status==="nicht_gesendet")toast("WhatsApp nicht eingerichtet (CALLMEBOT_PHONE / CALLMEBOT_APIKEY)","err");else toast("Fehler","err");}
 
 // ═══ KONFIGURATION ════════════════════════════════════════════════════
 async function ladeAktiveConfig(){
@@ -1188,7 +1188,7 @@ async function closePos(id){
 async function ladeSettings(){
   const s=await api("/status");
   if(s){
-    document.getElementById("s-next").textContent=s.next_scheduled?new Date(s.next_scheduled).toLocaleString("de-AT"):"—";
+    document.getElementById("s-next").textContent=s.zeitplan_pausiert?"⏸ pausiert":(s.next_scheduled?new Date(s.next_scheduled).toLocaleString("de-AT"):"—");
     document.getElementById("sysinfo").innerHTML=[
       ["Version","Multi-Agent v3.0"],
       ["Agenten","7 KI-Agenten"],
@@ -1223,7 +1223,7 @@ async function resumeSched(){const r=await api("/schedule/resume","POST");if(r&&
 async function pollStatus(){
   const s=await api("/status");
   if(s){
-    if(s.next_scheduled)document.getElementById("next-run").textContent=new Date(s.next_scheduled).toLocaleString("de-AT");
+    document.getElementById("next-run").textContent=s.zeitplan_pausiert?"⏸ pausiert":(s.next_scheduled?new Date(s.next_scheduled).toLocaleString("de-AT"):"—");
     if(s.demo_kapital)document.getElementById("demo-badge").textContent="💰 Demo: €"+fmt(s.demo_kapital);
     if(s.strategy)document.getElementById("strat-badge").textContent=`🎯 Strategie: ${s.strategy}`;
     if(s.capital_connected){

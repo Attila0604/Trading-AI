@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio, os, sys, json, logging
 from datetime import datetime
 
-from config import (jetzt, utc_nach_lokal, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
+from config import (jetzt, utc_nach_lokal, asset_to_epic, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
                     BREAKEVEN_STOP_R, VOLA_ADAPTIV, ATR_SL_FAKTOR, ATR_TP_FAKTOR,
                     ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
 
@@ -78,6 +78,9 @@ active_config = {
     "conf":     MIN_CONFIDENCE,
     "mode":     "semi",
     "mm_modus": MM_MODUS,
+    # Zeitplan-Pause muss Neustarts überleben - sonst lief die 07:00-Analyse
+    # nach jedem Deploy stillschweigend wieder.
+    "zeitplan_pausiert": False,
 }
 
 # ─── Config-Persistenz ───────────────────────────────────────────────────────
@@ -474,6 +477,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(morgen_analyse_job,
         trigger=CronTrigger(day_of_week="mon-fri", hour=7, minute=0, timezone="Europe/Vienna"),
         id="morgen_analyse", replace_existing=True)
+    if active_config.get("zeitplan_pausiert"):
+        scheduler.pause_job("morgen_analyse")
+        log.info("⏸ Morgen-Analyse pausiert (gespeicherter Zustand)")
     scheduler.add_job(tages_report_job,
         trigger=CronTrigger(hour=20, minute=0, timezone="Europe/Vienna"),
         id="tages_report", replace_existing=True)
@@ -612,6 +618,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         # Demo-Trades öffnen
         trades_geoeffnet = 0
         trades_übersprungen = 0
+        nur_analyse_signale = 0        # Modus "Nur Analyse": Signal gezeigt, kein Trade
         trades_abgelehnt = []          # (asset, grund) - vom Portfolio-Schutz blockiert
         vetos_protokolliert = []       # (asset, grund) - von der KI blockiert
 
@@ -639,16 +646,18 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         # ── Trading-Modus durchsetzen (war bisher wirkungslos!) ──────────
         # "analyse" = nur Signale anzeigen, KEINE Demo-Trades öffnen
+        # Das Dashboard speichert "analysis", ältere Configs "analyse" - beides gilt.
         modus = active_config.get("mode", "semi")
-        if modus == "analyse" and all_signals:
+        nur_analyse = modus in ("analyse", "analysis")
+        if nur_analyse and all_signals:
             log.info(f"📊 Modus 'Nur Analyse': {len(all_signals)} Signal(e) angezeigt, keine Trades geöffnet")
         # ─────────────────────────────────────────────────────────────────
 
         for signal in all_signals:
             if not risk_ok:
                 continue
-            if modus == "analyse":
-                trades_übersprungen += 1
+            if nur_analyse:
+                nur_analyse_signale += 1
                 continue
             if signal.get("confidence", 0) < active_config["conf"]:
                 continue
@@ -748,6 +757,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if trades_übersprungen > 0:
             msg += f"⏭ {trades_übersprungen} Asset(s) übersprungen (Wochenende)\n"
 
+        if nur_analyse_signale:
+            msg += f"📊 Modus *Nur Analyse*: {nur_analyse_signale} Signal(e), keine Demo-Trades eröffnet\n"
+
         msg += f"💡 {overview}\n\n"
 
         for s in all_signals:
@@ -798,7 +810,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         send_whatsapp(msg.strip())
 
-        if req.auto_execute:
+        if req.auto_execute and not nur_analyse:
             strong = [s for s in all_signals if s.get("confidence", 0) >= active_config["conf"] and asset_handelbar(s.get("asset",""))]
             if strong:
                 await auto_execute_signals(strong, req.position_size)
@@ -835,21 +847,6 @@ async def auto_execute_signals(signals: list, size: float):
             log.error(f"Order-Fehler {sig['asset']}: {e}")
             failed += 1
     send_whatsapp(f"⚡ Auto-Trade: {executed} ausgeführt | {failed} fehlgeschlagen")
-
-
-# --- HIER WURDE DER CODE GEHÄRTET (Epic Formatierung) ---
-def asset_to_epic(asset: str) -> str:
-    if not asset:
-        return ""
-    clean_asset = asset.strip().upper()
-    return {
-        "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
-        "AUD/USD": "AUDUSD", "USD/CHF": "USDCHF",
-        "BTC/USD": "BTCUSD", "ETH/USD": "ETHUSD",
-        "XAU/USD": "GOLD",   "XAG/USD": "SILVER",
-        "US500": "US500",    "US100": "USTEC", "DE40": "DE40",
-    }.get(clean_asset, clean_asset.replace("/", ""))
-# --------------------------------------------------------
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -1121,7 +1118,8 @@ async def place_trade(req: TradeRequest, _auth: bool = Depends(pruefe_token)):
     if result.get("dealId"):
         tracker.save_trade({"asset": req.asset, "direction": req.direction,
                             "size": req.size, "dealId": result["dealId"],
-                            "status": "manual", "action": "buy" if req.direction == "long" else "sell"})
+                            "status": "manual",
+                            "action": "buy" if req.direction.strip().lower() in ("long", "buy") else "sell"})
     return result
 
 @app.get("/positions")
@@ -1180,8 +1178,10 @@ async def demo_report():
 async def demo_report_senden(_auth: bool = Depends(pruefe_token)):
     tages_snapshot()
     report = generiere_tages_report()
-    send_whatsapp(report)
-    return {"status": "gesendet", "report": report}
+    # send_whatsapp gibt False zurück, wenn CallMeBot nicht eingerichtet ist -
+    # vorher meldete der Endpunkt trotzdem "gesendet".
+    gesendet = send_whatsapp(report)
+    return {"status": "gesendet" if gesendet else "nicht_gesendet", "report": report}
 
 async def _markt_bewertung(trade: dict) -> dict:
     """Aktueller Kurs + unrealisierter P&L eines offenen Demo-Trades."""
@@ -1285,6 +1285,8 @@ async def demo_trades_offen():
 async def pause_schedule(_auth: bool = Depends(pruefe_token)):
     try:
         scheduler.pause_job("morgen_analyse")
+        active_config["zeitplan_pausiert"] = True
+        config_speichern_datei()
         return {"status": "pausiert"}
     except Exception as e:
         log.error(f"Pause fehlgeschlagen: {e}")
@@ -1294,6 +1296,8 @@ async def pause_schedule(_auth: bool = Depends(pruefe_token)):
 async def resume_schedule(_auth: bool = Depends(pruefe_token)):
     try:
         scheduler.resume_job("morgen_analyse")
+        active_config["zeitplan_pausiert"] = False
+        config_speichern_datei()
         return {"status": "aktiv"}
     except Exception as e:
         log.error(f"Fortsetzen fehlgeschlagen: {e}")
@@ -1315,7 +1319,9 @@ async def status():
         "trading_modus":     active_config["mode"],
         "min_confidence":    active_config["conf"],
         "active_config":     active_config,
-        "next_scheduled":    job.next_run_time.isoformat() if job else None,
+        # Pausierte Jobs haben keinen next_run_time -> vorher HTTP 500 auf dem Healthcheck
+        "next_scheduled":    job.next_run_time.isoformat() if job and job.next_run_time else None,
+        "zeitplan_pausiert": bool(job and job.next_run_time is None),
         "demo_kapital":      demo["aktuelles_kapital"],
         "demo_roi":          demo["statistik"]["roi"],
         "demo_win_rate":     demo["statistik"]["win_rate"],

@@ -174,3 +174,24 @@ API_TOKEN         = _s("API_TOKEN", "")
 TRADING_ASSETS    = [a.strip() for a in _s("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500").split(",") if a.strip()]
 TRADING_STRATEGY  = _s("TRADING_STRATEGY", "adaptive")
 DASHBOARD_URL     = _s("DASHBOARD_URL", "https://trading-ai-production-5cca.up.railway.app")
+
+
+# ─── Asset → Capital.com-Epic ────────────────────────────────
+# EINE Tabelle für Analyse (agents.py) und Preise/Orders (main.py).
+# Vorher hatte agents.py eine eigene, kürzere Liste: XAG/USD oder US100
+# holten dort Kerzen unter "XAGUSD"/"US100", Preise aber unter
+# "SILVER"/"USTEC" - die Analyse fand keine Kerzen und blieb stumm.
+EPIC_MAP = {
+    "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
+    "AUD/USD": "AUDUSD", "USD/CHF": "USDCHF",
+    "BTC/USD": "BTCUSD", "ETH/USD": "ETHUSD",
+    "XAU/USD": "GOLD",   "XAG/USD": "SILVER",
+    "US500":   "US500",  "US100":   "USTEC",  "DE40": "DE40",
+}
+
+
+def asset_to_epic(asset: str) -> str:
+    if not asset:
+        return ""
+    clean = asset.strip().upper()
+    return EPIC_MAP.get(clean, clean.replace("/", ""))
