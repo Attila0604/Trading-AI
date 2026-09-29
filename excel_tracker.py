@@ -14,7 +14,8 @@ import os
 import logging
 import threading
 import config as cfg
-from datetime import datetime
+
+from config import jetzt   # Wiener Zeit - Railway läuft in UTC
 from pathlib import Path
 
 import openpyxl
@@ -254,7 +255,7 @@ class ExcelTracker:
 
         # Footer
         ws.merge_cells("B49:M49")
-        ws["B49"].value = f"  Generiert: {datetime.now().strftime('%d.%m.%Y %H:%M')}  •  KPIs und Charts werden automatisch aus den Datenblättern aktualisiert"
+        ws["B49"].value = f"  Generiert: {jetzt().strftime('%d.%m.%Y %H:%M')}  •  KPIs und Charts werden automatisch aus den Datenblättern aktualisiert"
         ws["B49"].font = font(color=Colors.TEXT_MUTED, size=9)
         ws["B49"].fill = fill(Colors.BG_DEEP)
         ws["B49"].alignment = Alignment(horizontal="left", vertical="center", indent=1)
@@ -761,7 +762,7 @@ class ExcelTracker:
         settings = [
             ("SECTION", "System"),
             ("Version",         "Trading Multi-Agent v3.0"),
-            ("Erstellt am",     datetime.now().strftime("%d.%m.%Y %H:%M")),
+            ("Erstellt am",     jetzt().strftime("%d.%m.%Y %H:%M")),
             ("SECTION", "Trading-Config"),
             ("Assets",          os.getenv("TRADING_ASSETS", "EUR/USD,BTC/USD,XAU/USD,US500")),
             ("Strategie",       os.getenv("TRADING_STRATEGY", "adaptive")),
@@ -816,7 +817,7 @@ class ExcelTracker:
             row = 2
             while ws.cell(row=row, column=1).value is not None:
                 row += 1
-            now = datetime.now()
+            now = jetzt()
             for d in result.get("decisions", []):
                 if d.get("action") == "hold":
                     continue
@@ -856,7 +857,7 @@ class ExcelTracker:
             row = 2
             while ws.cell(row=row, column=1).value is not None:
                 row += 1
-            now = datetime.now()
+            now = jetzt()
 
             direction = trade.get("direction", trade.get("action", "")).upper()
             einsatz   = float(trade.get("einsatz", trade.get("size", 0)))

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio, os, sys, json, logging
 from datetime import datetime
 
-from config import (jetzt, utc_nach_lokal, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
+from config import (jetzt, utc_nach_lokal, asset_to_epic, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
                     BREAKEVEN_STOP_R, VOLA_ADAPTIV, ATR_SL_FAKTOR, ATR_TP_FAKTOR,
                     ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
 
@@ -23,7 +23,7 @@ from demo_tracker import (
     get_risiko_status, breakeven_aktivieren, tracker_zuruecksetzen,
     veto_protokollieren, veto_schliessen, get_offene_vetos,
 )
-from money_management import get_modi, MODI
+from money_management import get_modi, MODI, params_aus_max_risiko
 from backtest import vergleiche_modi, optimiere_parameter
 from indicators import calculate_all_indicators
 
@@ -78,6 +78,9 @@ active_config = {
     "conf":     MIN_CONFIDENCE,
     "mode":     "semi",
     "mm_modus": MM_MODUS,
+    # Zeitplan-Pause muss Neustarts überleben - sonst lief die 07:00-Analyse
+    # nach jedem Deploy stillschweigend wieder.
+    "zeitplan_pausiert": False,
 }
 
 # ─── Config-Persistenz ───────────────────────────────────────────────────────
@@ -474,6 +477,9 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(morgen_analyse_job,
         trigger=CronTrigger(day_of_week="mon-fri", hour=7, minute=0, timezone="Europe/Vienna"),
         id="morgen_analyse", replace_existing=True)
+    if active_config.get("zeitplan_pausiert"):
+        scheduler.pause_job("morgen_analyse")
+        log.info("⏸ Morgen-Analyse pausiert (gespeicherter Zustand)")
     scheduler.add_job(tages_report_job,
         trigger=CronTrigger(hour=20, minute=0, timezone="Europe/Vienna"),
         id="tages_report", replace_existing=True)
@@ -508,7 +514,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Trading Multi-Agent v3.1", lifespan=lifespan)
+app = FastAPI(title="Trading Multi-Agent v3.3", lifespan=lifespan)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -612,6 +618,8 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         # Demo-Trades öffnen
         trades_geoeffnet = 0
         trades_übersprungen = 0
+        nur_analyse_signale = 0        # Modus "Nur Analyse": Signal gezeigt, kein Trade
+        unter_konfidenz = []           # (asset, konfidenz) - unter der Mindest-Konfidenz
         trades_abgelehnt = []          # (asset, grund) - vom Portfolio-Schutz blockiert
         vetos_protokolliert = []       # (asset, grund) - von der KI blockiert
 
@@ -639,21 +647,26 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         # ── Trading-Modus durchsetzen (war bisher wirkungslos!) ──────────
         # "analyse" = nur Signale anzeigen, KEINE Demo-Trades öffnen
+        # Das Dashboard speichert "analysis", ältere Configs "analyse" - beides gilt.
         modus = active_config.get("mode", "semi")
-        if modus == "analyse" and all_signals:
+        nur_analyse = modus in ("analyse", "analysis")
+        if nur_analyse and all_signals:
             log.info(f"📊 Modus 'Nur Analyse': {len(all_signals)} Signal(e) angezeigt, keine Trades geöffnet")
         # ─────────────────────────────────────────────────────────────────
 
         for signal in all_signals:
             if not risk_ok:
                 continue
-            if modus == "analyse":
-                trades_übersprungen += 1
+            if nur_analyse:
+                nur_analyse_signale += 1
                 continue
-            if signal.get("confidence", 0) < active_config["conf"]:
-                continue
-
             asset = signal.get("asset", "")
+            if signal.get("confidence", 0) < active_config["conf"]:
+                # Vorher stillschweigend verworfen: bei Min.-Konfidenz 70 fielen
+                # alle Confluence-6-Signale weg, ohne dass es irgendwo stand.
+                unter_konfidenz.append((asset, signal.get("confidence", 0)))
+                log.info(f"🔽 {asset}: Konfidenz {signal.get('confidence', 0)}% < {active_config['conf']}% → nicht gehandelt")
+                continue
 
             # Bei Veto wird trotz Portfolio-Sperre protokolliert (kostet nichts,
             # und die Veto-Auswertung braucht jedes blockierte Signal)
@@ -676,7 +689,11 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     if not epic:
                         continue
                     price_data = await capital.get_prices(epic)
-                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                    # Long kauft zum Ask, Short verkauft zum Bid
+                    if signal.get("action") == "sell":
+                        entry_price = float(price_data.get("bid") or price_data.get("ask") or 0)
+                    else:
+                        entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
                     if entry_price > 0:
                         log.info(f"✅ Entry-Price [{asset}]: {entry_price} (Versuch {versuch+1})")
                         break
@@ -700,6 +717,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     "entry_price":    entry_price,
                     "strategyUsed":   result.get("strategyUsed", req.strategy),
                     "mm_modus":       active_config["mm_modus"],
+                    "mm_params":      params_aus_max_risiko(active_config["mm_modus"], active_config["risk_pct"]),
                     "volatility_pct": vola_lookup.get(asset, 0),
                     "sessionScore":   result.get("sessionScore", 0),
                 })
@@ -712,6 +730,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 "entry_price":    entry_price,
                 "strategyUsed":   result.get("strategyUsed", req.strategy),
                 "mm_modus":       active_config["mm_modus"],
+                "mm_params":      params_aus_max_risiko(active_config["mm_modus"], active_config["risk_pct"]),
                 "volatility_pct": vola_lookup.get(asset, 0),
                 "sessionScore":   result.get("sessionScore", 0),
             })
@@ -748,6 +767,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if trades_übersprungen > 0:
             msg += f"⏭ {trades_übersprungen} Asset(s) übersprungen (Wochenende)\n"
 
+        if nur_analyse_signale:
+            msg += f"📊 Modus *Nur Analyse*: {nur_analyse_signale} Signal(e), keine Demo-Trades eröffnet\n"
+
         msg += f"💡 {overview}\n\n"
 
         for s in all_signals:
@@ -774,6 +796,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if not risk_ok:
             msg += f"🛡️ _Risk Guardian: Setup nicht freigegeben – keine Trades eröffnet._\n"
 
+        if unter_konfidenz:
+            msg += (f"🔽 Unter Min.-Konfidenz {active_config['conf']}%, nicht gehandelt: "
+                    + ", ".join(f"{a} ({k}%)" for a, k in unter_konfidenz) + "\n")
         if trades_abgelehnt:
             msg += f"🛡️ *Portfolio-Schutz:* {len(trades_abgelehnt)} Trade(s) nicht eröffnet\n"
             for a, g in trades_abgelehnt[:4]:
@@ -798,7 +823,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         send_whatsapp(msg.strip())
 
-        if req.auto_execute:
+        if req.auto_execute and not nur_analyse:
             strong = [s for s in all_signals if s.get("confidence", 0) >= active_config["conf"] and asset_handelbar(s.get("asset",""))]
             if strong:
                 await auto_execute_signals(strong, req.position_size)
@@ -835,21 +860,6 @@ async def auto_execute_signals(signals: list, size: float):
             log.error(f"Order-Fehler {sig['asset']}: {e}")
             failed += 1
     send_whatsapp(f"⚡ Auto-Trade: {executed} ausgeführt | {failed} fehlgeschlagen")
-
-
-# --- HIER WURDE DER CODE GEHÄRTET (Epic Formatierung) ---
-def asset_to_epic(asset: str) -> str:
-    if not asset:
-        return ""
-    clean_asset = asset.strip().upper()
-    return {
-        "EUR/USD": "EURUSD", "GBP/USD": "GBPUSD", "USD/JPY": "USDJPY",
-        "AUD/USD": "AUDUSD", "USD/CHF": "USDCHF",
-        "BTC/USD": "BTCUSD", "ETH/USD": "ETHUSD",
-        "XAU/USD": "GOLD",   "XAG/USD": "SILVER",
-        "US500": "US500",    "US100": "USTEC", "DE40": "DE40",
-    }.get(clean_asset, clean_asset.replace("/", ""))
-# --------------------------------------------------------
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -915,8 +925,11 @@ async def selftest():
     # 1. Zugangsdaten gesetzt?
     add("Anthropic API-Key", bool(os.getenv("ANTHROPIC_API_KEY")),
         "gesetzt" if os.getenv("ANTHROPIC_API_KEY") else "FEHLT - Analysen funktionieren nicht")
-    add("Capital.com Zugangsdaten", bool(os.getenv("CAPITAL_API_KEY")),
-        "gesetzt" if os.getenv("CAPITAL_API_KEY") else "FEHLT")
+    # Anmeldung braucht E-Mail + Passwort; der API-Key ist laut README optional
+    cap_login = bool(os.getenv("CAPITAL_EMAIL")) and bool(os.getenv("CAPITAL_PASSWORD"))
+    add("Capital.com Zugangsdaten", cap_login,
+        ("E-Mail + Passwort gesetzt" + ("" if os.getenv("CAPITAL_API_KEY") else ", ohne API-Key"))
+        if cap_login else "FEHLT - CAPITAL_EMAIL und CAPITAL_PASSWORD setzen")
 
     # 2. Demo oder Live?
     ist_demo = "demo" in capital.base
@@ -1082,9 +1095,12 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
     if not candles or len(candles) < 60:
         raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
 
+    # Wie live: bei VOLA_ADAPTIV SL/TP je Trade aus dem ATR - außer der Aufruf
+    # gibt ausdrücklich feste Werte vor.
+    atr_modus = VOLA_ADAPTIV and req.sl_pct is None and req.tp_pct is None
     res = vergleiche_modi(candles, startkapital=req.startkapital, sl_pct=sl, tp_pct=tp,
                           min_confluence=req.min_confluence,
-                          asset=asset, resolution=req.resolution)
+                          asset=asset, resolution=req.resolution, atr_modus=atr_modus)
     res["asset"]      = asset
     res["resolution"] = req.resolution
 
@@ -1094,7 +1110,7 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
             f"🔬 *BACKTEST {asset}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 {res['kerzen']} Kerzen ({req.resolution}) | {res['signal_trades']} Trades\n"
-            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | SL {sl}% / TP {tp}%\n"
+            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | {res['parameter']['sl_tp_text']}\n"
             f"━━━ Top Money-Management ━━━\n"
         )
         for i, r in enumerate(top, 1):
@@ -1121,7 +1137,8 @@ async def place_trade(req: TradeRequest, _auth: bool = Depends(pruefe_token)):
     if result.get("dealId"):
         tracker.save_trade({"asset": req.asset, "direction": req.direction,
                             "size": req.size, "dealId": result["dealId"],
-                            "status": "manual", "action": "buy" if req.direction == "long" else "sell"})
+                            "status": "manual",
+                            "action": "buy" if req.direction.strip().lower() in ("long", "buy") else "sell"})
     return result
 
 @app.get("/positions")
@@ -1180,8 +1197,10 @@ async def demo_report():
 async def demo_report_senden(_auth: bool = Depends(pruefe_token)):
     tages_snapshot()
     report = generiere_tages_report()
-    send_whatsapp(report)
-    return {"status": "gesendet", "report": report}
+    # send_whatsapp gibt False zurück, wenn CallMeBot nicht eingerichtet ist -
+    # vorher meldete der Endpunkt trotzdem "gesendet".
+    gesendet = send_whatsapp(report)
+    return {"status": "gesendet" if gesendet else "nicht_gesendet", "report": report}
 
 async def _markt_bewertung(trade: dict) -> dict:
     """Aktueller Kurs + unrealisierter P&L eines offenen Demo-Trades."""
@@ -1285,6 +1304,8 @@ async def demo_trades_offen():
 async def pause_schedule(_auth: bool = Depends(pruefe_token)):
     try:
         scheduler.pause_job("morgen_analyse")
+        active_config["zeitplan_pausiert"] = True
+        config_speichern_datei()
         return {"status": "pausiert"}
     except Exception as e:
         log.error(f"Pause fehlgeschlagen: {e}")
@@ -1294,6 +1315,8 @@ async def pause_schedule(_auth: bool = Depends(pruefe_token)):
 async def resume_schedule(_auth: bool = Depends(pruefe_token)):
     try:
         scheduler.resume_job("morgen_analyse")
+        active_config["zeitplan_pausiert"] = False
+        config_speichern_datei()
         return {"status": "aktiv"}
     except Exception as e:
         log.error(f"Fortsetzen fehlgeschlagen: {e}")
@@ -1315,7 +1338,9 @@ async def status():
         "trading_modus":     active_config["mode"],
         "min_confidence":    active_config["conf"],
         "active_config":     active_config,
-        "next_scheduled":    job.next_run_time.isoformat() if job else None,
+        # Pausierte Jobs haben keinen next_run_time -> vorher HTTP 500 auf dem Healthcheck
+        "next_scheduled":    job.next_run_time.isoformat() if job and job.next_run_time else None,
+        "zeitplan_pausiert": bool(job and job.next_run_time is None),
         "demo_kapital":      demo["aktuelles_kapital"],
         "demo_roi":          demo["statistik"]["roi"],
         "demo_win_rate":     demo["statistik"]["win_rate"],

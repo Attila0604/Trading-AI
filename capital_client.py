@@ -236,19 +236,25 @@ class CapitalClient:
             return {"status": "blocked",
                     "error": "Orders sind gesperrt (ORDERS_ENABLED=false). Demo-Simulation läuft weiter."}
         # ──────────────────────────────────────────────────────────────────
+        # Capital.com kennt nur BUY/SELL. Aufrufer übergeben teils LONG/SHORT -
+        # ohne Übersetzung ging die Order ungültig raus und ein LONG bekam die
+        # SL/TP-Level eines Shorts (Stop über, Ziel unter dem Kurs).
+        direction = {"LONG": "BUY", "SHORT": "SELL"}.get(direction.strip().upper(), direction.strip().upper())
+        if direction not in ("BUY", "SELL"):
+            return {"status": "error", "error": f"Ungültige Richtung: {direction} (erlaubt: BUY/SELL/LONG/SHORT)"}
         try:
             price_data    = await self.get_prices(epic)
             current_price = price_data.get("ask") if direction == "BUY" else price_data.get("bid")
 
             payload = {
                 "epic":           epic,
-                "direction":      direction.upper(),
+                "direction":      direction,
                 "size":           str(size),
                 "guaranteedStop": False,
             }
 
             if current_price:
-                if direction.upper() == "BUY":
+                if direction == "BUY":
                     sl_level = round(current_price * (1 - stop_loss_pct / 100), 5)
                     tp_level = round(current_price * (1 + take_profit_pct / 100), 5)
                 else:

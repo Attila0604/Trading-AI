@@ -29,7 +29,7 @@ from openpyxl import load_workbook, Workbook
 
 from money_management import berechne_einsatz
 from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
-                    MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS,
+                    MM_MODUS,
                     STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT,
                     DD_PAUSE_PCT, DD_VORSICHT_PCT, DD_VORSICHT_FAKTOR,
                     MAX_EXPOSURE_PCT, MAX_OFFENE_TRADES, EIN_TRADE_PRO_ASSET,
@@ -807,6 +807,7 @@ def veto_protokollieren(signal: dict) -> dict:
              "sl_pct": sl_pct, "tp_pct": tp_pct,
              "volatility_pct": signal.get("volatility_pct", 0),
              "letzte_trades": stats.get("letzte_trades", [])},
+        params=signal.get("mm_params"),
     )
     einsatz = round(float(mm["einsatz"]), 2)
     rr  = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0
