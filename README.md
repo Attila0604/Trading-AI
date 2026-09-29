@@ -152,14 +152,13 @@ curl -X POST https://deine-app.railway.app/trade \
 
 ## 📁 Excel Tracker
 
-Wird automatisch in `/app/data/Trading_Tracker.xlsx` gespeichert.
+Zwei Dateien im `DATA_DIR` (Railway-Volume `/app/data`):
 
-**Sheets:**
-- `Analyse-Log` – Alle Analyse-Ergebnisse
-- `Trades` – Ausgeführte Orders
-- `Positionen` – Offene Positionen
-- `Performance` – P&L Tracking
-- `Einstellungen` – System-Konfiguration
+- `Trading_Tracker.xlsx` – Blatt `Demo-Kapital`: alle Demo-Trades (T-Zeilen) und
+  KI-Vetos (V-Zeilen). Daraus werden Statistik, Drawdown und Portfolio-Schutz
+  berechnet. Download über den Knopf **📊 EXCEL** bzw. `GET /excel-download`.
+- `Trading_Analyse.xlsx` – Blätter `Dashboard`, `Trades` (echte Orders),
+  `Analyse-Log`, `Performance`, `Einstellungen`. Nur auf dem Volume, kein Download-Endpunkt.
 
 ---
 
@@ -167,9 +166,10 @@ Wird automatisch in `/app/data/Trading_Tracker.xlsx` gespeichert.
 
 - **IMMER** zuerst mit Demo-Account (`CAPITAL_DEMO=true`) testen!
 - `AUTO_TRADE=false` lassen bis das System vollständig getestet ist
-- Capital.com Demo-API: `https://demo-api-capital.backend.capital`
-- Capital.com Live-API: `https://api-capital.backend.capital`
-- Die Frontend-App (React) kann mit dem Backend via `/analyze` und `/trade` kommunizieren
+- Capital.com Demo-API: `https://demo-api-capital.backend-capital.com`
+- Capital.com Live-API: `https://api-capital.backend-capital.com`
+- `API_TOKEN` setzen: ohne ihn kann jeder mit der URL Analysen starten, Trades buchen und den Tracker zurücksetzen
+- Echte Orders gehen nur mit `ORDERS_ENABLED=true` raus (Standard: gesperrt)
 
 ---
 
@@ -246,6 +246,10 @@ Regel-Signal, fällt der KI-Aufruf ganz weg.
 | `SIGNAL_QUELLE` | regeln | `regeln` = Regeln + KI-Veto, `ki` = alter Ablauf mit sechs Agenten |
 | `AGENT_MODEL` | claude-haiku-4-5-20251001 | Modell für alle KI-Aufrufe |
 | `REGEL_MIN_CONFLUENCE` | 6 | Mindest-Confluence eines Regel-Signals (wie im Backtest) |
+| `CONFLUENCE_RICHTUNGSTREU` | true | RSI- und Bollinger-Punkte zählen bei einem Trend-Signal nur, wenn sie in dieselbe Richtung zeigen. `false` = alte Wertung |
+
+Signale unter der Mindest-Konfidenz werden nicht mehr stillschweigend verworfen,
+sondern im Log und in der WhatsApp-Nachricht aufgeführt.
 
 Hinweis: Auch Regel-Signale laufen durch den Konfidenz-Filter im Dashboard
 (Konfidenz = Confluence × 10). Min. Konfidenz 60 % entspricht Confluence 6.
@@ -260,3 +264,20 @@ Knopf dafür im Konfigurations-Tab.
 Gedacht für einen sauberen Schnitt zwischen zwei Parameter-Generationen: stehen
 Trades mit alten und neuen SL/TP-Regeln in derselben Statistik, lässt sich hinterher
 nicht mehr sagen, woran ein Ergebnis lag.
+
+### Dashboard-Einstellungen, die wirklich wirken (v3.3.1)
+
+| Einstellung | Wirkung |
+|---|---|
+| Max Risiko / Trade | Einsatz in % vom Kapital bei *Fixer Prozentsatz*, Fallback bei *Half-Kelly*, Basis bei *Anti-Martingale* |
+| Stop Loss / Take Profit | nur bei `VOLA_ADAPTIV=false`, sonst gelten die ATR-Stops |
+| Position Size | nur für echte Orders (`/trade`, Auto-Trade) |
+| Min. Konfidenz | Signale darunter werden nicht gehandelt (Konfidenz = Confluence × 10) |
+| Modus *Demo-Trades* | Signale werden automatisch als Demo-Trades eröffnet |
+| Modus *Nur Analyse* | nur Signale, keine Demo-Trades, keine Orders |
+| Modus *Demo + echte Orders* | wie Demo-Trades, beim Knopf ANALYSE zusätzlich echte Orders (nur mit `ORDERS_ENABLED=true`) |
+| ⏸ Pause | pausiert die 07:00-Analyse, bleibt auch nach Neustart pausiert |
+
+Der Backtest (`POST /backtest`) rechnet jetzt wie live: ATR-Stops je Trade
+(bei `VOLA_ADAPTIV=true`), Timeout nach `MAX_TRADE_TAGE`, Tageskerzen als Standard
+im Dashboard. Der nachgezogene Break-even-Stop ist im Backtest nicht enthalten.

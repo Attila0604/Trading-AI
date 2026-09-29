@@ -186,6 +186,25 @@ _DISPATCH = {
 }
 
 
+# Welcher Modus-Parameter vom Dashboard-Regler "Max Risiko / Trade" gesteuert
+# wird. Nur Modi, deren Grundwert ein einfacher %-Satz ist (Default jeweils 2 %).
+# Volatilitäts- und Confidence-Modus behalten ihre eigenen Parameter.
+MAX_RISIKO_PARAM = {
+    "fixed_percent":   "risk_pct",
+    "kelly":           "fallback_pct",
+    "anti_martingale": "basis_pct",
+}
+
+
+def params_aus_max_risiko(modus: str, risk_pct) -> dict | None:
+    """Overrides für berechne_einsatz() aus dem Config-Wert risk_pct."""
+    key = MAX_RISIKO_PARAM.get(modus)
+    wert = _f(risk_pct, 0)
+    if not key or wert <= 0:
+        return None
+    return {key: wert}
+
+
 # ── Öffentliche API ──────────────────────────────────────────────────────────
 def get_modi() -> list:
     """Liste aller Modi für Dashboard-Dropdown / API-Endpoint."""

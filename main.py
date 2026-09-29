@@ -23,7 +23,7 @@ from demo_tracker import (
     get_risiko_status, breakeven_aktivieren, tracker_zuruecksetzen,
     veto_protokollieren, veto_schliessen, get_offene_vetos,
 )
-from money_management import get_modi, MODI
+from money_management import get_modi, MODI, params_aus_max_risiko
 from backtest import vergleiche_modi, optimiere_parameter
 from indicators import calculate_all_indicators
 
@@ -514,7 +514,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Trading Multi-Agent v3.1", lifespan=lifespan)
+app = FastAPI(title="Trading Multi-Agent v3.3", lifespan=lifespan)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -619,6 +619,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         trades_geoeffnet = 0
         trades_übersprungen = 0
         nur_analyse_signale = 0        # Modus "Nur Analyse": Signal gezeigt, kein Trade
+        unter_konfidenz = []           # (asset, konfidenz) - unter der Mindest-Konfidenz
         trades_abgelehnt = []          # (asset, grund) - vom Portfolio-Schutz blockiert
         vetos_protokolliert = []       # (asset, grund) - von der KI blockiert
 
@@ -659,10 +660,13 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
             if nur_analyse:
                 nur_analyse_signale += 1
                 continue
-            if signal.get("confidence", 0) < active_config["conf"]:
-                continue
-
             asset = signal.get("asset", "")
+            if signal.get("confidence", 0) < active_config["conf"]:
+                # Vorher stillschweigend verworfen: bei Min.-Konfidenz 70 fielen
+                # alle Confluence-6-Signale weg, ohne dass es irgendwo stand.
+                unter_konfidenz.append((asset, signal.get("confidence", 0)))
+                log.info(f"🔽 {asset}: Konfidenz {signal.get('confidence', 0)}% < {active_config['conf']}% → nicht gehandelt")
+                continue
 
             # Bei Veto wird trotz Portfolio-Sperre protokolliert (kostet nichts,
             # und die Veto-Auswertung braucht jedes blockierte Signal)
@@ -685,7 +689,11 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     if not epic:
                         continue
                     price_data = await capital.get_prices(epic)
-                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                    # Long kauft zum Ask, Short verkauft zum Bid
+                    if signal.get("action") == "sell":
+                        entry_price = float(price_data.get("bid") or price_data.get("ask") or 0)
+                    else:
+                        entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
                     if entry_price > 0:
                         log.info(f"✅ Entry-Price [{asset}]: {entry_price} (Versuch {versuch+1})")
                         break
@@ -709,6 +717,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     "entry_price":    entry_price,
                     "strategyUsed":   result.get("strategyUsed", req.strategy),
                     "mm_modus":       active_config["mm_modus"],
+                    "mm_params":      params_aus_max_risiko(active_config["mm_modus"], active_config["risk_pct"]),
                     "volatility_pct": vola_lookup.get(asset, 0),
                     "sessionScore":   result.get("sessionScore", 0),
                 })
@@ -721,6 +730,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 "entry_price":    entry_price,
                 "strategyUsed":   result.get("strategyUsed", req.strategy),
                 "mm_modus":       active_config["mm_modus"],
+                "mm_params":      params_aus_max_risiko(active_config["mm_modus"], active_config["risk_pct"]),
                 "volatility_pct": vola_lookup.get(asset, 0),
                 "sessionScore":   result.get("sessionScore", 0),
             })
@@ -786,6 +796,9 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if not risk_ok:
             msg += f"🛡️ _Risk Guardian: Setup nicht freigegeben – keine Trades eröffnet._\n"
 
+        if unter_konfidenz:
+            msg += (f"🔽 Unter Min.-Konfidenz {active_config['conf']}%, nicht gehandelt: "
+                    + ", ".join(f"{a} ({k}%)" for a, k in unter_konfidenz) + "\n")
         if trades_abgelehnt:
             msg += f"🛡️ *Portfolio-Schutz:* {len(trades_abgelehnt)} Trade(s) nicht eröffnet\n"
             for a, g in trades_abgelehnt[:4]:
@@ -912,8 +925,11 @@ async def selftest():
     # 1. Zugangsdaten gesetzt?
     add("Anthropic API-Key", bool(os.getenv("ANTHROPIC_API_KEY")),
         "gesetzt" if os.getenv("ANTHROPIC_API_KEY") else "FEHLT - Analysen funktionieren nicht")
-    add("Capital.com Zugangsdaten", bool(os.getenv("CAPITAL_API_KEY")),
-        "gesetzt" if os.getenv("CAPITAL_API_KEY") else "FEHLT")
+    # Anmeldung braucht E-Mail + Passwort; der API-Key ist laut README optional
+    cap_login = bool(os.getenv("CAPITAL_EMAIL")) and bool(os.getenv("CAPITAL_PASSWORD"))
+    add("Capital.com Zugangsdaten", cap_login,
+        ("E-Mail + Passwort gesetzt" + ("" if os.getenv("CAPITAL_API_KEY") else ", ohne API-Key"))
+        if cap_login else "FEHLT - CAPITAL_EMAIL und CAPITAL_PASSWORD setzen")
 
     # 2. Demo oder Live?
     ist_demo = "demo" in capital.base
@@ -1079,9 +1095,12 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
     if not candles or len(candles) < 60:
         raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
 
+    # Wie live: bei VOLA_ADAPTIV SL/TP je Trade aus dem ATR - außer der Aufruf
+    # gibt ausdrücklich feste Werte vor.
+    atr_modus = VOLA_ADAPTIV and req.sl_pct is None and req.tp_pct is None
     res = vergleiche_modi(candles, startkapital=req.startkapital, sl_pct=sl, tp_pct=tp,
                           min_confluence=req.min_confluence,
-                          asset=asset, resolution=req.resolution)
+                          asset=asset, resolution=req.resolution, atr_modus=atr_modus)
     res["asset"]      = asset
     res["resolution"] = req.resolution
 
@@ -1091,7 +1110,7 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
             f"🔬 *BACKTEST {asset}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 {res['kerzen']} Kerzen ({req.resolution}) | {res['signal_trades']} Trades\n"
-            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | SL {sl}% / TP {tp}%\n"
+            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | {res['parameter']['sl_tp_text']}\n"
             f"━━━ Top Money-Management ━━━\n"
         )
         for i, r in enumerate(top, 1):

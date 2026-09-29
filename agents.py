@@ -35,7 +35,7 @@ except (ValueError, TypeError):
     REGEL_MIN_CONFLUENCE = 6
 
 # Asset → Capital.com Epic: gemeinsame Tabelle in config.py
-from config import asset_to_epic
+from config import asset_to_epic, jetzt
 
 
 def call_claude(user_prompt: str, system_prompt: str, web_search: bool = False,
@@ -93,7 +93,7 @@ def news_agent(assets: list[str]) -> list[dict]:
     log.info(f"[News Sentinel] Analysiere Nachrichten für {assets}")
     raw = call_claude(
         f"""Analysiere aktuelle Finanznachrichten für: {', '.join(assets)}.
-Datum/Zeit: {__import__('datetime').datetime.now().strftime('%d.%m.%Y %H:%M')}.
+Datum/Zeit: {jetzt().strftime('%d.%m.%Y %H:%M')}.
 Antworte NUR mit JSON-Array (kein Markdown):
 [{{"asset":"string","sentiment":"bullish|bearish|neutral","score":-100 bis 100,"keyNews":["news1","news2"],"tradingImplication":"string auf Deutsch","urgency":"low|medium|high"}}]""",
         "Du bist ein Financial News Intelligence Agent. Antworte AUSSCHLIESSLICH mit validem JSON-Array, kein Markdown.",
@@ -182,7 +182,7 @@ Antworte NUR mit JSON-Array:
 def macro_agent() -> dict:
     log.info("[Macro Scout] Makroökonomische Analyse...")
     raw = call_claude(
-        f"""Analysiere das aktuelle makroökonomische Umfeld ({__import__('datetime').datetime.now().strftime('%d.%m.%Y')}).
+        f"""Analysiere das aktuelle makroökonomische Umfeld ({jetzt().strftime('%d.%m.%Y')}).
 Faktoren: Fed/EZB Zinspolitik, USD-Stärke, VIX-Level, Inflation, Risikoappetit, wichtige Wirtschaftsdaten.
 Antworte NUR mit JSON:
 {{"environment":"risk-on|risk-off|mixed","score":-100 bis 100,"usdStrength":"strong|neutral|weak","riskAppetite":"high|medium|low","keyFactors":["f1","f2","f3"],"outlook":"1 Satz auf Deutsch"}}""",
@@ -317,7 +317,6 @@ def veto_agent(signale: list[dict]) -> dict:
     (die Regeln handeln trotzdem) - aber es wird als Fehler markiert, damit
     solche Tage bei der Auswertung erkennbar bleiben.
     """
-    from config import jetzt   # Railway läuft in UTC - der Prüfer braucht Wiener Zeit
     log.info(f"[Veto-Prüfer] Prüfe {len(signale)} Regel-Signal(e) mit {AGENT_MODEL}")
 
     zeilen = []
@@ -580,7 +579,6 @@ async def _ki_pipeline(assets: list[str], strategy: str, risk_pct: float, sl_pct
 async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: float = 2.0,
                        sl_pct: float = 1.5, tp_pct: float = 3.0, position_size: float = 1000,
                        capital_client=None, skip_assets: list[str] = None) -> dict:
-    from datetime import datetime
     from capital_client import CapitalClient
 
     log.info("=" * 60)
@@ -595,7 +593,7 @@ async def run_pipeline(assets: list[str], strategy: str = "adaptive", risk_pct: 
         log.info(f"[Pipeline] Übersprungen (Trade offen): {', '.join(sorted(skip))}")
 
     basis = {
-        "timestamp":    datetime.now().isoformat(),
+        "timestamp":    jetzt().isoformat(),
         "assets":       assets,
         "signalQuelle": SIGNAL_QUELLE,
         "agentModel":   AGENT_MODEL,

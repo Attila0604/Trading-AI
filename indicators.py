@@ -2,7 +2,10 @@
 Technische Indikatoren - reines Python, keine Dependencies.
 RSI, MACD, EMA, SMA, Bollinger Bands aus OHLC-Kerzen.
 """
+import os
 from typing import Optional
+
+RICHTUNGSTREU = os.getenv("CONFLUENCE_RICHTUNGSTREU", "true").strip().lower() not in ("false", "0", "no", "nein")
 
 
 def sma(values: list[float], period: int) -> Optional[float]:
@@ -174,22 +177,56 @@ def calculate_all_indicators(candles: list[dict]) -> dict:
     bb_data = bollinger_bands(closes)
     
     # Signal & Confluence
+    # Richtungstreu (Standard): Gibt es ein Trend-Signal (Trend + MACD), zählen
+    # RSI- und Bollinger-Punkte nur, wenn sie in DIESELBE Richtung zeigen.
+    # Vorher gab ein überverkaufter RSI (<30) einem SHORT einen Extrapunkt und
+    # ein überkaufter RSI (>70) einem LONG - genau die überdehnten Einstiege
+    # bekamen die höchste Bewertung (Gold RSI 23 im Abwärtstrend -> SHORT 8/10).
+    # Ohne Trend-Signal (reiner RSI-Rebound) bleibt alles wie bisher.
+    # CONFLUENCE_RICHTUNGSTREU=false stellt das alte Verhalten wieder her.
     signal = "neutral"
     confluence = 5
+    rsi_richtung = None
     if rsi_val:
         if rsi_val < 30:
-            signal = "buy"; confluence += 1
+            rsi_richtung = "long"
         elif rsi_val > 70:
-            signal = "sell"; confluence += 1
+            rsi_richtung = "short"
+    trend_richtung = None
     if macd_data:
         if macd_data["trend"] == "bullish" and trend == "uptrend":
+            trend_richtung = "long"
+        elif macd_data["trend"] == "bearish" and trend == "downtrend":
+            trend_richtung = "short"
+    bb_richtung = None
+    if bb_data and bb_data["position"] in ("breakout_up", "breakout_down"):
+        bb_richtung = "long" if bb_data["position"] == "breakout_up" else "short"
+
+    if RICHTUNGSTREU and trend_richtung:
+        confluence += 2
+        stark = rsi_richtung == trend_richtung
+        if stark:
+            confluence += 1
+        if bb_richtung == trend_richtung:
+            confluence += 1
+        if trend_richtung == "long":
+            signal = "strong buy" if stark else "buy"
+        else:
+            signal = "strong sell" if stark else "sell"
+    else:
+        # Alte Logik (auch der Pfad ohne Trend-Signal im richtungstreuen Modus)
+        if rsi_richtung == "long":
+            signal = "buy"; confluence += 1
+        elif rsi_richtung == "short":
+            signal = "sell"; confluence += 1
+        if trend_richtung == "long":
             signal = "strong buy" if signal == "buy" else "buy"
             confluence += 2
-        elif macd_data["trend"] == "bearish" and trend == "downtrend":
+        elif trend_richtung == "short":
             signal = "strong sell" if signal == "sell" else "sell"
             confluence += 2
-    if bb_data and bb_data["position"] in ("breakout_up", "breakout_down"):
-        confluence += 1
+        if bb_richtung:
+            confluence += 1
     confluence = min(10, max(1, confluence))
     
     ema_alignment = "mixed"

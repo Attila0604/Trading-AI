@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Trading Multi-Agent v3.0</title>
+<title>Trading Multi-Agent v3.3</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -22,7 +22,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:1
 .agent-pill.active{background:#22d3ee18;border-color:#22d3ee88;color:var(--cyan)}
 .agent-pill.done{border-color:#10b98144;color:var(--green)}
 .run-btn{background:#f5c51822;color:var(--gold);border:1px solid #f5c51866;border-radius:6px;padding:8px 18px;font-size:10px;font-family:var(--font);font-weight:700;cursor:pointer;letter-spacing:.1em;white-space:nowrap;flex-shrink:0;transition:all .2s}
-.run-btn.stop{background:#f43f5e22;color:var(--red);border-color:#f43f5e66}
+.run-btn.stop{background:#22d3ee22;color:var(--cyan);border-color:#22d3ee66;cursor:wait}
 .status-bar{background:var(--s);border-bottom:1px solid var(--b);padding:6px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:10px}
 .badge{display:inline-block;border-radius:3px;padding:2px 8px;font-size:9px;font-weight:600;letter-spacing:.06em;white-space:nowrap}
 .tabs{background:var(--s);border-bottom:1px solid var(--b);display:flex;padding:0 16px;overflow-x:auto}
@@ -54,9 +54,6 @@ canvas{width:100%!important;height:200px!important}
 .metric-l{font-size:8px;color:var(--muted);letter-spacing:.1em;margin-bottom:1px}
 .metric-v{font-size:12px;font-weight:600;font-family:var(--font)}
 .sig-summary{font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:7px}
-.sig-btns{display:flex;gap:7px}
-.btn-ok{flex:1;background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:4px;padding:7px;font-size:10px;font-family:var(--font);font-weight:600;cursor:pointer}
-.btn-no{flex:1;background:#f43f5e22;color:var(--red);border:1px solid #f43f5e44;border-radius:4px;padding:7px;font-size:10px;font-family:var(--font);font-weight:600;cursor:pointer}
 .log-box{height:280px;overflow-y:auto}
 .log-box::-webkit-scrollbar{width:3px}
 .log-box::-webkit-scrollbar-thumb{background:var(--b);border-radius:2px}
@@ -99,15 +96,7 @@ button:hover{filter:brightness(1.15)}
 <div class="hdr">
   <div class="logo">TRADING.AI</div>
   <div class="divider"></div>
-  <div class="agent-strip">
-    <div class="agent-pill" id="ap-news">○ News Sentinel</div>
-    <div class="agent-pill" id="ap-tech">○ Tech Analyst</div>
-    <div class="agent-pill" id="ap-macro">○ Macro Scout</div>
-    <div class="agent-pill" id="ap-risk">○ Risk Guardian</div>
-    <div class="agent-pill" id="ap-strategy">○ Strategy AI</div>
-    <div class="agent-pill" id="ap-exec">○ Executor</div>
-    <div class="agent-pill" id="ap-brain">○ Orchestrator</div>
-  </div>
+  <div class="agent-strip" id="agent-strip"></div>
   <button class="run-btn" id="run-btn" onclick="startPipeline()">▶ ANALYSE STARTEN</button>
 </div>
 
@@ -186,7 +175,7 @@ button:hover{filter:brightness(1.15)}
   <div class="grid2">
     <div class="card">
       <div class="card-title" style="display:flex;justify-content:space-between">
-        <span>KAPITALVERLAUF (30 TAGE)</span>
+        <span>KAPITALVERLAUF (JE ABGESCHLOSSENEM TRADE)</span>
         <span id="chart-trend" style="font-size:10px;font-weight:400"></span>
       </div>
       <div class="chart-wrap"><canvas id="kapital-chart"></canvas></div>
@@ -230,7 +219,7 @@ button:hover{filter:brightness(1.15)}
     <div class="card" style="height:560px;display:flex;flex-direction:column">
       <div class="card-title">AGENT-PROTOKOLL</div>
       <div class="log-box" id="log-box">
-        <div class="log-row"><span class="log-t" id="init-t">--:--:--</span><span>🔵</span><span class="log-info">Multi-Agent v3.0 bereit.</span></div>
+        <div class="log-row"><span class="log-t" id="init-t">--:--:--</span><span>🔵</span><span class="log-info">Multi-Agent v3.3 bereit.</span></div>
       </div>
     </div>
   </div>
@@ -301,11 +290,11 @@ button:hover{filter:brightness(1.15)}
         </div>
         <div style="display:flex;gap:6px;margin-bottom:10px">
           <select id="bt-res" style="flex:1;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:5px 8px;color:var(--muted);font-size:10px;font-family:var(--font);outline:none">
+            <option value="DAY" selected>Tages-Kerzen (wie live)</option>
             <option value="HOUR_4">4-Stunden-Kerzen</option>
             <option value="HOUR">1-Stunden-Kerzen</option>
-            <option value="MINUTE_30" selected>30-Minuten-Kerzen</option>
+            <option value="MINUTE_30">30-Minuten-Kerzen</option>
             <option value="MINUTE_15">15-Minuten-Kerzen</option>
-            <option value="DAY">Tages-Kerzen</option>
           </select>
           <select id="bt-count" style="flex:1;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:5px 8px;color:var(--muted);font-size:10px;font-family:var(--font);outline:none">
             <option value="500">500 Kerzen</option>
@@ -354,15 +343,12 @@ button:hover{filter:brightness(1.15)}
         <span style="color:var(--muted);font-size:10px">Verbindungsstatus</span>
         <span id="cap-badge2" class="badge" style="background:#f43f5e20;color:var(--red);border:1px solid #f43f5e33">○ GETRENNT</span>
       </div>
-      <div style="margin-bottom:10px">
-        <div style="color:var(--muted);font-size:9px;margin-bottom:4px">E-Mail</div>
-        <input type="text" id="s-email" placeholder="ihre@email.com" style="width:100%;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:7px 9px;color:var(--text);font-size:12px;font-family:var(--font);outline:none;box-sizing:border-box">
+      <div style="color:var(--muted);font-size:10px;line-height:1.6;margin-bottom:12px">
+        Die Zugangsdaten kommen aus den Railway-Variablen <code>CAPITAL_EMAIL</code>, <code>CAPITAL_PASSWORD</code>
+        und <code>CAPITAL_API_KEY</code>. Zum Ändern dort eintragen und neu deployen.
+        Der Knopf baut die Sitzung mit diesen Daten neu auf.
       </div>
-      <div style="margin-bottom:12px">
-        <div style="color:var(--muted);font-size:9px;margin-bottom:4px">Passwort</div>
-        <input type="password" id="s-pass" placeholder="••••••••" style="width:100%;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:7px 9px;color:var(--text);font-size:12px;font-family:var(--font);outline:none;box-sizing:border-box">
-      </div>
-      <button onclick="connectCap()" style="width:100%;background:#f5c51822;color:var(--gold);border:1px solid #f5c51844;border-radius:6px;padding:10px;font-size:11px;font-family:var(--font);font-weight:600;cursor:pointer;letter-spacing:.1em">⚡ VERBINDEN</button>
+      <button onclick="connectCap()" style="width:100%;background:#f5c51822;color:var(--gold);border:1px solid #f5c51844;border-radius:6px;padding:10px;font-size:11px;font-family:var(--font);font-weight:600;cursor:pointer;letter-spacing:.1em">⚡ NEU VERBINDEN</button>
     </div>
     <div>
       <div class="card">
@@ -413,17 +399,30 @@ const STRATS=[
 const nowT=()=>new Date().toLocaleTimeString("de-AT");
 const fmt=(n,dec=2)=>n!=null?Number(n).toLocaleString("de-AT",{minimumFractionDigits:dec,maximumFractionDigits:dec}):"—";
 const fmtP=(n,dec=4)=>n!=null?Number(n).toFixed(dec):"—";
+// Alles, was vom Server oder von Claude kommt, als Text einsetzen, nie als HTML
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function toast(msg,type="inf"){const t=document.getElementById("toast");t.textContent=msg;t.className="toast "+type+" show";setTimeout(()=>t.classList.remove("show"),3000);}
 function logMsg(emoji,msg,cls="log-info"){
   const box=document.getElementById("log-box");
   const row=document.createElement("div");row.className="log-row";
-  row.innerHTML=`<span class="log-t">${nowT()}</span><span>${emoji}</span><span class="${cls}">${msg}</span>`;
+  row.innerHTML=`<span class="log-t">${nowT()}</span><span>${emoji}</span><span class="${cls}">${esc(msg)}</span>`;
   box.appendChild(row);box.scrollTop=box.scrollHeight;
 }
-function setAgent(id,state){
-  const el=document.getElementById("ap-"+id);if(!el)return;
-  el.className="agent-pill"+(state==="active"?" active":state==="done"?" done":"");
-  el.textContent=(state==="active"?"● ":state==="done"?"✓ ":"○ ")+el.textContent.replace(/^[●✓○] /,"");
+// Agenten-Leiste zeigt die Schritte der TATSÄCHLICHEN Signalquelle.
+// Das Backend meldet keinen Fortschritt je Schritt - während eine Analyse
+// läuft, stehen daher alle auf "läuft", danach auf "fertig".
+const SCHRITTE={
+  regeln:["Marktdaten","Regeln","KI-Veto","Portfolio-Schutz","Demo-Trades"],
+  ki:["News Sentinel","Tech Analyst","Macro Scout","Risk Guardian","Strategy AI","Orchestrator","Demo-Trades"],
+};
+let signalQuelle="regeln", leistenZustand="";
+function renderAgentStrip(zustand){
+  leistenZustand=zustand;
+  const el=document.getElementById("agent-strip");if(!el)return;
+  const cls=zustand==="active"?" active":zustand==="done"?" done":"";
+  const sym=zustand==="active"?"● ":zustand==="done"?"✓ ":"○ ";
+  el.innerHTML=(SCHRITTE[signalQuelle]||SCHRITTE.regeln)
+    .map(n=>`<div class="agent-pill${cls}">${sym}${esc(n)}</div>`).join("");
 }
 // ═══ API + TOKEN ══════════════════════════════════════════════════════
 function getToken(){try{return localStorage.getItem("tai_token")||"";}catch(e){return "";}}
@@ -487,10 +486,18 @@ function updateMoneyManagement(stats, kapital, startkapital, risiko) {
     statusEl.style.cssText = `background:${mm.statusColor}20;color:${mm.statusColor};border:1px solid ${mm.statusColor}33`;
   }
 
+  // "Max Risiko" steuert nur diese Modi (Backend: money_management.MAX_RISIKO_PARAM)
+  const RISIKO_MODI = {fixed_percent:"", kelly:" · Kelly-Fallback", anti_martingale:" · Basis, ±Serie"};
+  const modusName = (MM_MODI.find(m=>m.id===cfg.mm_modus)||{}).name || cfg.mm_modus;
   const einsatzEl = document.getElementById("mm-einsatz");
-  if (einsatzEl) { einsatzEl.textContent = `€${fmt(mm.einsatz)}`; einsatzEl.style.color = mm.stufeColor; }
   const einsatzSub = document.getElementById("mm-einsatz-sub");
-  if (einsatzSub) einsatzSub.textContent = `${mm.risikoProzent}% des Kapitals` + (r.einsatz_faktor !== undefined && r.einsatz_faktor < 1 ? ` (×${r.einsatz_faktor})` : "");
+  if (cfg.mm_modus in RISIKO_MODI) {
+    if (einsatzEl) { einsatzEl.textContent = `€${fmt(mm.einsatz)}`; einsatzEl.style.color = mm.stufeColor; }
+    if (einsatzSub) einsatzSub.textContent = `${mm.risikoProzent}% des Kapitals${RISIKO_MODI[cfg.mm_modus]}` + (r.einsatz_faktor !== undefined && r.einsatz_faktor < 1 ? ` (×${r.einsatz_faktor})` : "");
+  } else {
+    if (einsatzEl) { einsatzEl.textContent = "je Signal"; einsatzEl.style.color = mm.stufeColor; }
+    if (einsatzSub) einsatzSub.textContent = `berechnet im Modus „${modusName}“`;
+  }
 
   const stufeEl = document.getElementById("mm-stufe");
   if (stufeEl) { stufeEl.textContent = mm.stufe; stufeEl.style.color = mm.stufeColor; }
@@ -606,8 +613,8 @@ function renderDemoStats(stats, sv){
   }
   wrap.innerHTML=rows.map(([l,v,c])=>`
     <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033">
-      <span style="color:var(--muted);font-size:10px">${l}</span>
-      <span style="color:${c};font-size:11px;font-weight:600;font-family:var(--font)">${v}</span>
+      <span style="color:var(--muted);font-size:10px">${esc(l)}</span>
+      <span style="color:${c};font-size:11px;font-weight:600;font-family:var(--font)">${esc(v)}</span>
     </div>`).join("");
 }
 
@@ -690,7 +697,7 @@ function renderOffeneTrades(trades){
     const slPct = parseFloat(tv(t,"SL %","sl_pct")||1.5);
     const tpPct = parseFloat(tv(t,"TP %","tp_pct")||3.0);
     const act   = String(tv(t,"Action","action")||"").toLowerCase();
-    const tid   = tv(t,"ID","id")||"—";
+    const tid   = esc(tv(t,"ID","id")||"—");
     const isBuy = act === "buy" || act === "long";
 
     // Absoluter SL/TP Preis berechnen
@@ -711,7 +718,7 @@ function renderOffeneTrades(trades){
 
     return`<tr>
       <td>${tid}</td>
-      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
+      <td style="color:var(--cyan);font-weight:700">${esc(tv(t,"Asset","asset")||"—")}</td>
       <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${act.toUpperCase()}</span></td>
       <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
       <td style="color:var(--gold);font-weight:600">${entry>0?fmtP(entry):"—"}</td>
@@ -720,7 +727,7 @@ function renderOffeneTrades(trades){
       <td style="color:var(--red)">${slPct}%</td>
       <td style="color:var(--green)">${tpPct}%</td>
       <td style="color:${(tv(t,"Konfidenz","konfidenz")||0)>=70?"var(--green)":"var(--gold)"}">${tv(t,"Konfidenz","konfidenz")||0}%</td>
-      <td style="color:var(--muted);font-size:9px">${tv(t,"Geöffnet am","geoeffnet_am")||"—"}</td>
+      <td style="color:var(--muted);font-size:9px">${esc(tv(t,"Geöffnet am","geoeffnet_am")||"—")}</td>
       <td><div style="display:flex;gap:4px">
         <button onclick="schliesseMarkt('${tid}')" title="Zum aktuellen Marktpreis schließen (echter P&amp;L)" style="background:#f5c54222;color:var(--gold);border:1px solid #f5c54244;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer;font-weight:700">💱 Markt</button>
         <button onclick="schliesseDemo('${tid}','gewonnen')" title="Als voller TP buchen" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
@@ -745,14 +752,14 @@ function renderLetzteTrades(trades){
     const color=st==="gewonnen"?"var(--green)":st==="verloren"?"var(--red)":"var(--muted)";
     const emoji=st==="gewonnen"?"✅":st==="verloren"?"❌":"⏸";
     return`<tr>
-      <td>${tv(t,"ID","id")||"—"}</td>
-      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
+      <td>${esc(tv(t,"ID","id")||"—")}</td>
+      <td style="color:var(--cyan);font-weight:700">${esc(tv(t,"Asset","asset")||"—")}</td>
       <td><span style="color:${String(tv(t,"Action","action")||"").toLowerCase()==="buy"?"var(--green)":"var(--red)"}">${String(tv(t,"Action","action")||"").toUpperCase()}</span></td>
       <td style="color:var(--gold)">${entry>0?fmtP(entry):"—"}</td>
       <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
       <td><span style="color:${color};font-weight:700">${emoji} ${st.toUpperCase()}</span></td>
       <td style="color:${pnl>=0?"var(--green)":"var(--red)"};font-weight:700">${pnl>=0?"+":""}€${fmt(pnl)}</td>
-      <td style="color:var(--muted);font-size:9px">${tv(t,"Geschlossen am","geschlossen_am")||"—"}</td>
+      <td style="color:var(--muted);font-size:9px">${esc(tv(t,"Geschlossen am","geschlossen_am")||"—")}</td>
     </tr>`;
   }).join("")}
   </tbody></table></div>`;
@@ -771,7 +778,7 @@ async function schliesseMarkt(id){
 
 async function schliesseDemo(id,ergebnis){
   const txt=ergebnis==="gewonnen"?"als vollen TP-GEWINN buchen":"als vollen SL-VERLUST buchen";
-  if(!confirm(`Trade ${id} ${txt}?\n\n(Tipp: „💱 Markt" schließt zum echten Kurs.)`))return;
+  if(!confirm(`Trade ${id} ${txt}?\n\nAchtung: Das bucht den vollen Betrag unabhängig vom aktuellen Kurs und fließt so in Win-Rate und Kapital ein.\n„💱 Markt" schließt zum echten Kurs.`))return;
   const r=await api(`/demo/trade/${id}/schliessen?ergebnis=${ergebnis}`,"POST");
   if(r){toast(`Trade ${id}: ${ergebnis}`,"ok");setTimeout(ladeDemo,500);}
   else toast("Fehler","err");
@@ -801,12 +808,12 @@ function updateConfigPreview(){
   if(!el)return;
   el.innerHTML=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-      <span style="color:var(--muted)">Strategie:</span><span style="color:var(--cyan)">${cfg.strategy}</span>
-      <span style="color:var(--muted)">Assets:</span><span style="color:var(--text)">${cfg.assets.join(", ")}</span>
+      <span style="color:var(--muted)">Strategie:</span><span style="color:var(--cyan)">${esc(cfg.strategy)}</span>
+      <span style="color:var(--muted)">Assets:</span><span style="color:var(--text)">${esc(cfg.assets.join(", "))}</span>
       <span style="color:var(--muted)">Max Risiko:</span><span style="color:var(--gold)">${cfg.risk}%</span>
       <span style="color:var(--muted)">SL/TP:</span><span style="color:var(--text)">${cfg.sl}% / ${cfg.tp}%</span>
       <span style="color:var(--muted)">Konfidenz:</span><span style="color:var(--green)">${cfg.conf}%</span>
-      <span style="color:var(--muted)">Modus:</span><span style="color:var(--text)">${cfg.mode}</span>
+      <span style="color:var(--muted)">Modus:</span><span style="color:var(--text)">${esc(cfg.mode)}</span>
       <span style="color:var(--muted)">Money-Mgmt:</span><span style="color:var(--gold)">${(MM_MODI.find(m=>m.id===cfg.mm_modus)||{}).name||cfg.mm_modus}</span>
     </div>`;
 }
@@ -829,7 +836,11 @@ function renderAssets(){
   cfg.assets.forEach(a=>{
     const div=document.createElement("div");
     div.style.cssText="display:flex;align-items:center;gap:4px;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:3px 9px;font-size:11px;color:var(--cyan);font-weight:500";
-    div.innerHTML=`${a}<span style="color:var(--muted);cursor:pointer;font-size:10px" onclick="removeAsset('${a}')">×</span>`;
+    div.appendChild(document.createTextNode(a));
+    const x=document.createElement("span");
+    x.style.cssText="color:var(--muted);cursor:pointer;font-size:10px";x.textContent="×";
+    x.addEventListener("click",()=>removeAsset(a));
+    div.appendChild(x);
     wrap.appendChild(div);
   });
   const cnt=document.getElementById("aktive-assets-count");
@@ -855,10 +866,10 @@ function renderStrats(){
 function renderSliders(){
   const wrap=document.getElementById("slider-wrap");if(!wrap)return;
   const sliders=[
-    {key:"risk",label:"Max Risiko / Trade",min:0.5,max:10,step:0.5,val:cfg.risk,unit:"%"},
-    {key:"sl",label:"Stop Loss",min:0.5,max:10,step:0.5,val:cfg.sl,unit:"%"},
-    {key:"tp",label:"Take Profit",min:0.5,max:20,step:0.5,val:cfg.tp,unit:"%"},
-    {key:"size",label:"Position Size",min:100,max:10000,step:100,val:cfg.size,unit:"€"},
+    {key:"risk",label:"Max Risiko / Trade (Fixer %, Kelly-Fallback, Anti-Martingale-Basis)",min:0.5,max:10,step:0.5,val:cfg.risk,unit:"%"},
+    {key:"sl",label:"Stop Loss (nur ohne ATR-Modus)",min:0.5,max:10,step:0.5,val:cfg.sl,unit:"%"},
+    {key:"tp",label:"Take Profit (nur ohne ATR-Modus)",min:0.5,max:20,step:0.5,val:cfg.tp,unit:"%"},
+    {key:"size",label:"Position Size (nur echte Orders)",min:100,max:10000,step:100,val:cfg.size,unit:"€"},
     {key:"conf",label:"Min. Konfidenz",min:50,max:99,step:5,val:cfg.conf,unit:"%"},
   ];
   wrap.innerHTML=sliders.map(s=>`
@@ -897,10 +908,10 @@ async function trackerReset(){
   const r=await api("/demo/reset?bestaetigung=RESET","POST");
   btn.disabled=false; btn.textContent="🗃️ Neuen Abschnitt starten";
   if(r&&r.status==="zurückgesetzt"){
-    el.innerHTML=`<span style="color:var(--green)">✅ ${r.trades} Trades archiviert als <code>${r.archiviert}</code> — Start bei €${fmt(r.kapital_nachher)}</span>`;
+    el.innerHTML=`<span style="color:var(--green)">✅ ${r.trades} Trades archiviert als <code>${esc(r.archiviert)}</code> — Start bei €${fmt(r.kapital_nachher)}</span>`;
     toast("Neuer Abschnitt gestartet","ok"); setTimeout(ladeDemo,500); pollStatus();
   } else {
-    el.innerHTML=`<span style="color:var(--red)">Fehler: ${(r&&r.detail)||"unbekannt"}</span>`;
+    el.innerHTML=`<span style="color:var(--red)">Fehler: ${esc((r&&r.detail)||"unbekannt")}</span>`;
     toast("Reset fehlgeschlagen","err");
   }
 }
@@ -923,8 +934,8 @@ async function systemcheck(){
   r.checks.forEach(c=>{
     html+=`<div style="display:flex;gap:6px;padding:3px 0;border-top:1px solid var(--b);font-size:10px">
       <span>${sym[c.status]}</span>
-      <span style="color:var(--text);min-width:105px">${c.name}</span>
-      <span style="color:${farbe[c.status]};flex:1">${c.info}</span></div>`;
+      <span style="color:var(--text);min-width:105px">${esc(c.name)}</span>
+      <span style="color:${farbe[c.status]};flex:1">${esc(c.info)}</span></div>`;
   });
   box.innerHTML=html;
 }
@@ -940,7 +951,7 @@ async function parameterOptimieren(){
   box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Teste alle SL/TP-Kombinationen für <b>${asset}</b>…</div>`;
   const r=await api("/backtest/optimieren","POST",{asset:asset,resolution:res,count:cnt});
   btn.disabled=false;btn.textContent="🎯 Beste Einstellung finden";
-  if(!r||r.error){box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Optimierung fehlgeschlagen"}</div>`;return;}
+  if(!r||r.error){box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${esc(r&&r.error?r.error:"Optimierung fehlgeschlagen")}</div>`;return;}
   let html=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">🎯 ${r.signale} Signale | ${r.getestet} Kombinationen getestet | <b style="color:${r.profitabel>0?'var(--green)':'var(--red)'}">${r.profitabel} mit echtem Vorsprung</b></div>`;
   html+=`<table style="width:100%;font-size:10px;border-collapse:collapse">
     <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">SL / TP</td><td style="text-align:center">SCHW</td><td style="text-align:right">TRADES</td><td style="text-align:right">WIN</td><td style="text-align:right">NÖTIG</td><td style="text-align:right">VORSPRUNG</td><td style="text-align:right">PF</td></tr>`;
@@ -956,7 +967,7 @@ async function parameterOptimieren(){
       <td style="text-align:right;color:var(--text)">${x.profit_factor}</td>
     </tr>`;
   });
-  html+=`</table><div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 <b>VORSPRUNG</b> = Win-Rate minus der Rate, die dieses SL/TP-Verhältnis rechnerisch zum Break-even braucht. Nur positiv = echter Edge.<br>⚠️ ${r.hinweis}</div>`;
+  html+=`</table><div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 <b>VORSPRUNG</b> = Win-Rate minus der Rate, die dieses SL/TP-Verhältnis rechnerisch zum Break-even braucht. Nur positiv = echter Edge.<br>⚠️ ${esc(r.hinweis)}</div>`;
   box.innerHTML=html;
 }
 
@@ -964,7 +975,7 @@ async function parameterOptimieren(){
 function renderBacktestAssets(){
   const sel=document.getElementById("bt-asset");if(!sel)return;
   const prev=sel.value;
-  sel.innerHTML=cfg.assets.map(a=>`<option value="${a}">${a}</option>`).join("");
+  sel.innerHTML=cfg.assets.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join("");
   if(prev&&cfg.assets.includes(prev))sel.value=prev;
 }
 async function backtestStarten(){
@@ -977,9 +988,9 @@ async function backtestStarten(){
   const cnt=parseInt(document.getElementById("bt-count").value);
   const mc=parseInt(document.getElementById("bt-conf").value);
   const r=await api("/backtest","POST",{asset:asset,resolution:res,count:cnt,min_confluence:mc});
-  btn.disabled=false;btn.textContent="▶ Backtest starten";
+  btn.disabled=false;btn.textContent="▶ Backtest";
   if(!r||r.error||!r.ergebnisse||!r.ergebnisse.length){
-    box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Backtest fehlgeschlagen — genug Kerzen vorhanden?"}</div>`;
+    box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${esc(r&&r.error?r.error:"Backtest fehlgeschlagen — genug Kerzen vorhanden?")}</div>`;
     return;
   }
   let html="";
@@ -987,14 +998,14 @@ async function backtestStarten(){
     html+=`<div style="background:#f5c51811;border:1px solid #f5c51844;border-radius:4px;padding:6px 9px;margin-bottom:8px;color:var(--gold);font-size:10px;line-height:1.5">⚠️ Nur ${r.signal_trades} Trades — das reicht NICHT für eine belastbare Aussage. Die Rangfolge ist bei so wenigen Trades Zufall. Feinere Kerzen, mehr Kerzen oder lockerere Schwelle wählen (ab ~30 Trades wird es aussagekräftig).</div>`;
   }
   if(r.haltedauer&&r.haltedauer.median_kerzen!==undefined){
-    html+=`<div style="background:#22d3ee11;border:1px solid #22d3ee33;border-radius:4px;padding:6px 9px;margin-bottom:8px;color:var(--cyan);font-size:10px;line-height:1.5">⏱️ Haltedauer: Median <b>${r.haltedauer.median_kerzen}</b> Kerzen, 90 % unter <b>${r.haltedauer.p90_kerzen}</b>, längster ${r.haltedauer.max_kerzen}. Der Live-Timeout (MAX_TRADE_TAGE) sollte darüber liegen — sonst werden Gewinner gekappt.</div>`;
+    html+=`<div style="background:#22d3ee11;border:1px solid #22d3ee33;border-radius:4px;padding:6px 9px;margin-bottom:8px;color:var(--cyan);font-size:10px;line-height:1.5">⏱️ Haltedauer: Median <b>${r.haltedauer.median_kerzen}</b> Kerzen, 90 % unter <b>${r.haltedauer.p90_kerzen}</b>, längster ${r.haltedauer.max_kerzen}. ${r.parameter.timeout_kerzen?` Wie live wird nach ${r.parameter.timeout_kerzen} Kerzen zum Schlusskurs geschlossen.`:""}</div>`;
   }
-  html+=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">📊 ${r.kerzen} Kerzen | ${r.signal_trades} Trades | Win-Rate ${r.ergebnisse[0].win_rate}% | SL ${r.parameter.sl_pct}% / TP ${r.parameter.tp_pct}%</div>`;
+  html+=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">📊 ${r.kerzen} Kerzen | ${r.signal_trades} Trades | Win-Rate ${r.ergebnisse[0].win_rate}% | ${esc(r.parameter.sl_tp_text||("SL "+r.parameter.sl_pct+"% / TP "+r.parameter.tp_pct+"%"))}${r.timeouts?` | ${r.timeouts} per Timeout geschlossen`:""}</div>`;
   html+=`<table style="width:100%;font-size:10px;border-collapse:collapse">
     <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">MODUS</td><td style="text-align:right">ROI</td><td style="text-align:right">MAX-DD</td><td style="text-align:right">PF</td></tr>`;
   r.ergebnisse.forEach((x,i)=>{
     const col=x.roi_pct>=0?"var(--green)":"var(--red)";
-    const name=i===0?"🏆 "+x.mm_name:x.mm_name;
+    const name=esc(i===0?"🏆 "+x.mm_name:x.mm_name);
     html+=`<tr style="border-top:1px solid var(--b)">
       <td style="padding:5px 0;color:${i===0?'var(--gold)':'var(--text)'};font-weight:${i===0?'700':'400'}">${name}</td>
       <td style="text-align:right;color:${col};font-weight:600">${x.roi_pct>=0?'+':''}${x.roi_pct}%</td>
@@ -1022,9 +1033,9 @@ function renderMM(){
 function renderModes(){
   const wrap=document.getElementById("mode-btns");if(!wrap)return;wrap.innerHTML="";
   const modes=[
-    {id:"auto",l:"⚡ Vollautomatisch",d:"Signale werden sofort ausgeführt",c:"#10b981"},
-    {id:"semi",l:"⏸ Semi-Automatisch",d:"Jeder Trade bedarf Bestätigung",c:"#22d3ee"},
-    {id:"analysis",l:"📊 Nur Analyse",d:"Keine Orders — nur Signale",c:"#a855f7"},
+    {id:"auto",l:"⚡ Demo + echte Orders",d:"Demo-Trades automatisch; beim Knopf ANALYSE zusätzlich echte Capital.com-Orders (nur wenn ORDERS_ENABLED=true)",c:"#10b981"},
+    {id:"semi",l:"💰 Demo-Trades",d:"Signale werden automatisch als Demo-Trades eröffnet, keine echten Orders",c:"#22d3ee"},
+    {id:"analysis",l:"📊 Nur Analyse",d:"Nur Signale anzeigen — keine Demo-Trades, keine Orders",c:"#a855f7"},
   ];
   modes.forEach(m=>{
     const sel=cfg.mode===m.id;
@@ -1038,66 +1049,45 @@ function renderModes(){
 
 // ═══ PIPELINE ═════════════════════════════════════════════════════════
 async function startPipeline(){
-  if(pipelineRunning){
-    pipelineRunning=false;
-    document.getElementById("run-btn").textContent="▶ ANALYSE STARTEN";
-    document.getElementById("run-btn").classList.remove("stop");
-    return;
-  }
-  pipelineRunning=true;signals=[];
-  document.getElementById("run-btn").textContent="⛔ STOPP";
-  document.getElementById("run-btn").classList.add("stop");
-  showTab("signale",document.querySelectorAll(".tab-btn")[1]);
-  logMsg("🧠","Pipeline gestartet — "+cfg.strategy+" | "+cfg.assets.join(", "));
-
-  const seq=[
-    {id:"news",delay:200,msg:"News Sentinel: Nachrichten..."},
-    {id:"tech",delay:1500,msg:"Tech Analyst: RSI, MACD..."},
-    {id:"macro",delay:3000,msg:"Macro Scout: Fed, EZB..."},
-    {id:"risk",delay:4500,msg:"Risk Guardian: Assessment..."},
-    {id:"strategy",delay:5500,msg:"Strategy AI: Optimierung..."},
-    {id:"brain",delay:6500,msg:"Orchestrator: Entscheidungen..."},
-  ];
-  seq.forEach(({id,delay,msg})=>{
-    setTimeout(()=>{if(!pipelineRunning)return;setAgent(id,"active");logMsg("⟳",msg);},delay);
-    setTimeout(()=>setAgent(id,"done"),delay+1200);
-  });
-
+  if(pipelineRunning)return;   // läuft schon - das Backend lässt sich nicht abbrechen
+  const btn=document.getElementById("run-btn");
   const result=await api("/analyze","POST",{
     assets:cfg.assets,strategy:cfg.strategy,
     risk_pct:cfg.risk,sl_pct:cfg.sl,tp_pct:cfg.tp,
     position_size:cfg.size,auto_execute:cfg.mode==="auto",
   });
+  if(!result){logMsg("⚠️","Backend nicht erreichbar","log-warning");toast("Verbindungsfehler","err");return;}
+  if(result.detail){toast(String(result.detail),"err");return;}   // z.B. "Pipeline bereits aktiv"
 
-  if(result){
-    logMsg("✅","Analyse gestartet — WhatsApp kommt!","log-success");
-    toast("Analyse läuft!","ok");
-    setTimeout(async()=>{
-      const sig=await api("/signals");
-      if(sig&&sig.signals&&sig.signals.length>0){
-        signals=sig.signals.map(s=>({...s,status:"pending"}));
-        renderSignals();
-        logMsg("🎯",`${signals.length} Signal(e) | Score: ${sig.sessionScore}/100`,"log-trade");
-      }
-      setAgent("exec","done");
-      setTimeout(ladeDemo,2000);
-    },15000);
-  }else{
-    logMsg("⚠️","Backend nicht erreichbar","log-warning");
-    toast("Verbindungsfehler","err");
+  pipelineRunning=true;
+  btn.textContent="⏳ ANALYSE LÄUFT…";btn.classList.add("stop");btn.disabled=true;
+  showTab("signale",document.querySelectorAll(".tab-btn")[1]);
+  logMsg("🧠","Analyse gestartet — "+cfg.assets.join(", "));
+  renderAgentStrip("active");
+
+  // Bis das Backend fertig meldet (max. 15 Minuten)
+  const t0=Date.now();
+  await new Promise(r=>setTimeout(r,3000));
+  while(Date.now()-t0<15*60*1000){
+    const st=await api("/status");
+    if(st&&!st.pipeline_running)break;
+    await new Promise(r=>setTimeout(r,3000));
   }
-
-  setTimeout(()=>{
-    pipelineRunning=false;
-    document.getElementById("run-btn").textContent="▶ ANALYSE STARTEN";
-    document.getElementById("run-btn").classList.remove("stop");
-  },16000);
+  pipelineRunning=false;
+  btn.textContent="▶ ANALYSE STARTEN";btn.classList.remove("stop");btn.disabled=false;
+  renderAgentStrip("done");
+  const sig=await api("/signals");
+  signals=(sig&&sig.signals)||[];
+  renderSignals();
+  logMsg("✅",`Analyse fertig: ${signals.length} Signal(e) | Score ${sig?sig.sessionScore:"—"}/100`,"log-success");
+  toast("Analyse fertig","ok");
+  ladeDemo();pollStatus();
 }
 
 async function ladeSignale(){
   const sig=await api("/signals");
   if(sig&&sig.signals&&sig.signals.length>0){
-    signals=sig.signals.map(s=>({...s,status:s.status||"pending"}));
+    signals=sig.signals;
     renderSignals();
     if(sig.sessionScore!==undefined)
       logMsg("🎯",`${signals.length} Signal(e) vom Server geladen | Score: ${sig.sessionScore}/100`,"log-trade");
@@ -1117,31 +1107,24 @@ function renderSignals(){
     div.innerHTML=`
       <div class="sig-head">
         <div style="display:flex;align-items:center;gap:7px">
-          <span class="badge" style="background:${bc}20;color:${bc};border:1px solid ${bc}44">${s.action.toUpperCase()}</span>
-          <span style="color:var(--text);font-size:15px;font-weight:700">${s.asset}</span>
+          <span class="badge" style="background:${bc}20;color:${bc};border:1px solid ${bc}44">${esc(String(s.action).toUpperCase())}</span>
+          <span style="color:var(--text);font-size:15px;font-weight:700">${esc(s.asset)}</span>
         </div>
-        <span class="badge" style="background:#52527020;color:var(--muted);border:1px solid #52527033">${s.confidence}%</span>
+        <span class="badge" style="background:#52527020;color:var(--muted);border:1px solid #52527033">${esc(s.confidence)}%</span>
       </div>
       <div class="sig-metrics">
         <div class="metric"><div class="metric-l">SL</div><div class="metric-v" style="color:#f43f5e">${Number(s.stopLoss||0).toFixed(1)}%</div></div>
         <div class="metric"><div class="metric-l">TP</div><div class="metric-v" style="color:#10b981">${Number(s.takeProfit||0).toFixed(1)}%</div></div>
         <div class="metric"><div class="metric-l">R:R</div><div class="metric-v" style="color:#22d3ee">${Number(s.riskReward||0).toFixed(1)}:1</div></div>
       </div>
-      <div class="sig-summary">${s.summary||""}</div>
-      ${s.status==="pending"?`<div class="sig-btns"><button class="btn-ok" onclick="approveSig(${i})">✓ DEMO-TRADE ÖFFNEN</button><button class="btn-no" onclick="rejectSig(${i})">✕ ABLEHNEN</button></div>`:
-      `<span class="badge" style="background:${s.status==="approved"?"#10b98120":"#52527020"};color:${s.status==="approved"?"#10b981":"var(--muted)"};border:1px solid ${s.status==="approved"?"#10b98133":"#52527033"};padding:4px 8px">${s.status==="approved"?"✓ GEÖFFNET":"✕ ABGELEHNT"}</span>`}`;
+      <div class="sig-summary">${esc(s.summary||"")}</div>
+      ${s.veto
+        ?`<span class="badge" style="background:#f5c51820;color:var(--gold);border:1px solid #f5c51833;padding:4px 8px">⛔ KI-VETO — nicht gehandelt, wird mitverfolgt</span>`
+        :`<span class="badge" style="background:#22d3ee20;color:var(--cyan);border:1px solid #22d3ee33;padding:4px 8px">→ Demo-Trade automatisch (falls Modus, Konfidenz und Schutz es erlauben)</span>`}`;
     wrap.appendChild(div);
   });
 }
 
-async function approveSig(i){
-  signals[i].status="approved";renderSignals();
-  // Ehrlich: die Demo-Trades werden bereits von der Analyse-Pipeline
-  // geöffnet. Dieser Knopf markiert das Signal nur für die Übersicht.
-  toast("Signal als genehmigt markiert","ok");
-  setTimeout(ladeDemo,1000);
-}
-function rejectSig(i){signals[i].status="rejected";renderSignals();}
 
 // ═══ PORTFOLIO ════════════════════════════════════════════════════════
 async function ladePortfolio(){
@@ -1164,12 +1147,12 @@ async function ladePortfolio(){
     ${pos.positions.map(p=>{
       const pnl=p.pnl||0;const pc=pnl>=0?"#10b981":"#f43f5e";const dc=p.direction==="BUY"?"#10b981":"#f43f5e";
       return`<tr>
-        <td>${p.epic||"—"}</td>
+        <td>${esc(p.epic||"—")}</td>
         <td><span class="badge" style="background:${dc}20;color:${dc};border:1px solid ${dc}44;font-size:9px">${p.direction}</span></td>
         <td style="color:var(--muted)">${p.openLevel||"—"}</td>
         <td>${p.currentBid||"—"}</td>
         <td style="color:${pc};font-weight:600">${pnl>=0?"+":""}€${fmt(pnl)}</td>
-        <td><button onclick="closePos('${p.dealId}')" style="background:#f43f5e11;color:#f43f5e;border:1px solid #f43f5e33;border-radius:3px;padding:3px 8px;font-size:9px;cursor:pointer">CLOSE</button></td>
+        <td><button onclick="closePos('${esc(p.dealId)}')" style="background:#f43f5e11;color:#f43f5e;border:1px solid #f43f5e33;border-radius:3px;padding:3px 8px;font-size:9px;cursor:pointer">CLOSE</button></td>
       </tr>`;
     }).join("")}
     </tbody></table>`;
@@ -1190,15 +1173,16 @@ async function ladeSettings(){
   if(s){
     document.getElementById("s-next").textContent=s.zeitplan_pausiert?"⏸ pausiert":(s.next_scheduled?new Date(s.next_scheduled).toLocaleString("de-AT"):"—");
     document.getElementById("sysinfo").innerHTML=[
-      ["Version","Multi-Agent v3.0"],
-      ["Agenten","7 KI-Agenten"],
+      ["Version","Multi-Agent v3.3"],
+      ["Signalquelle",s.signal_quelle==="ki"?"KI (6 Agenten)":"Regeln + KI-Veto"],
+      ["KI-Modell",s.agent_model||"—"],
       ["Assets",(s.assets||[]).join(", ")],
       ["Strategie",s.strategy||"—"],
       ["Capital.com",s.capital_connected?"✅ Verbunden":"❌ Getrennt"],
       ["Demo Kapital",s.demo_kapital?"€"+fmt(s.demo_kapital):"—"],
       ["Demo ROI",s.demo_roi!=null?(s.demo_roi>=0?"+":"")+s.demo_roi.toFixed(2)+"%":"—"],
       ["Win Rate",s.demo_win_rate!=null?s.demo_win_rate.toFixed(1)+"%":"—"],
-    ].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033"><span style="color:var(--muted);font-size:10px">${k}</span><span style="color:var(--text);font-size:10px">${v}</span></div>`).join("");
+    ].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033"><span style="color:var(--muted);font-size:10px">${esc(k)}</span><span style="color:var(--text);font-size:10px">${esc(v)}</span></div>`).join("");
     if(s.capital_connected){
       [document.getElementById("cap-badge"),document.getElementById("cap-badge2")].forEach(el=>{
         if(el){el.textContent="● Capital.com verbunden";el.style.cssText="background:#10b98120;color:#10b981;border:1px solid #10b98133";}
@@ -1209,12 +1193,9 @@ async function ladeSettings(){
   }
 }
 async function connectCap(){
-  const email=document.getElementById("s-email").value;
-  const pass=document.getElementById("s-pass").value;
-  if(!email||!pass){toast("E-Mail und Passwort eingeben","err");return;}
   const r=await api("/connect","POST");
-  if(r&&r.connected){toast("Capital.com verbunden!","ok");ladeSettings();}
-  else toast("Verbindung fehlgeschlagen","err");
+  if(r&&r.connected){toast("Capital.com verbunden","ok");ladeSettings();}
+  else toast("Verbindung fehlgeschlagen – Railway-Variablen CAPITAL_EMAIL / CAPITAL_PASSWORD prüfen","err");
 }
 async function pauseSched(){const r=await api("/schedule/pause","POST");if(r&&r.status){toast("Zeitplan pausiert","ok");pollStatus();}else{toast("Fehler beim Ändern des Zeitplans","err");}}
 async function resumeSched(){const r=await api("/schedule/resume","POST");if(r&&r.status){toast("Zeitplan aktiv","ok");pollStatus();}else{toast("Fehler beim Ändern des Zeitplans","err");}}
@@ -1230,14 +1211,16 @@ async function pollStatus(){
       const b=document.getElementById("cap-badge");
       if(b){b.textContent="● Capital.com verbunden";b.style.cssText="background:#10b98120;color:#10b981;border:1px solid #10b98133";}
     }
-    document.getElementById("p-sigs").textContent=s.signals_count||0;
+    document.getElementById("p-sigs").textContent=(s.risiko&&s.risiko.offen)||0;
+    if(s.signal_quelle&&s.signal_quelle!==signalQuelle){signalQuelle=s.signal_quelle;renderAgentStrip(leistenZustand);}
   }
 }
 
 // ═══ INIT ═════════════════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded",function(){
   document.getElementById("init-t").textContent=nowT();
-  ladeDemo();
+  renderAgentStrip("");
+  ladeAktiveConfig().then(ladeDemo);
   ladeSignale();
   pollStatus();
   setInterval(pollStatus,15000);
