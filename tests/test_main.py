@@ -87,13 +87,27 @@ def test_token_schuetzt_schreibende_endpoints(app_env, monkeypatch):
     assert c.post("/demo/reset?bestaetigung=RESET", headers={"X-API-Token": "geheim"}).status_code == 200
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Auch mit gesetztem API_TOKEN sind Kontostand, Positionen und der "
-    "komplette Excel-Download ohne Token abrufbar."))
 def test_token_schuetzt_auch_lesende_endpoints(app_env, monkeypatch):
     monkeypatch.setattr(main, "API_TOKEN", "geheim")
     app_env[2].signal_oeffnen({"asset": "EUR/USD", "action": "buy", "entry_price": 1.1})
     assert TestClient(main.app).get("/excel-download").status_code == 401
+
+
+def test_dashboard_und_status_bleiben_ohne_token_offen(app_env, monkeypatch):
+    monkeypatch.setattr(main, "API_TOKEN", "geheim")
+    c = TestClient(main.app)
+    assert c.get("/").status_code == 200
+    assert c.get("/status").status_code == 200
+    assert c.get("/demo/statistik").status_code == 401
+    assert c.get("/demo/statistik", headers={"X-API-Token": "geheim"}).status_code == 200
+
+
+def test_orders_ohne_api_token_gesperrt(app_env):
+    c = TestClient(main.app)
+    assert c.post("/trade", json={"asset": "EUR/USD", "direction": "long"}).status_code == 403
+    assert c.post("/close/ABC").status_code == 403
+    assert app_env[0].orders == []
+    assert c.get("/demo/statistik").status_code == 200      # Lesen bleibt ohne Token offen
 
 
 def test_reset_verweigert_bei_offenen_trades(app_env):
@@ -119,6 +133,21 @@ def test_pipeline_oeffnet_trade_mit_atr_stops(app_env, monkeypatch):
     assert offen[0]["SL %"] == pytest.approx(1.8) and offen[0]["TP %"] == pytest.approx(3.6)
 
 
+def test_pipeline_nutzt_risiko_regler(app_env, monkeypatch):
+    monkeypatch.setitem(main.active_config, "risk_pct", 1.0)
+    _pipeline_mit(monkeypatch, [_decision()])
+    _analyse()
+    assert app_env[2].get_offene_trades()[0]["Einsatz"] == 10.0
+
+
+@pytest.mark.parametrize("modus", ["analysis", "analyse"])
+def test_modus_nur_analyse_oeffnet_keine_trades(app_env, monkeypatch, modus):
+    monkeypatch.setitem(main.active_config, "mode", modus)
+    _pipeline_mit(monkeypatch, [_decision()])
+    _analyse()
+    assert app_env[2].get_offene_trades() == []
+
+
 def test_pipeline_protokolliert_veto_statt_trade(app_env, monkeypatch):
     _pipeline_mit(monkeypatch, [_decision(veto=True)])
     _analyse()
@@ -126,11 +155,6 @@ def test_pipeline_protokolliert_veto_statt_trade(app_env, monkeypatch):
     assert len(app_env[2].get_offene_vetos()) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Default MIN_CONFIDENCE=70, Regel-Signale mit Confluence 6 haben aber "
-    "Konfidenz 60. Ohne gespeicherte config.json werden sie weder gehandelt noch als "
-    "Veto protokolliert - live wird also eine andere Strategie gefahren als im "
-    "Backtest (min_confluence 6)."))
 def test_default_konfidenz_passt_zu_regel_confluence():
     from config import MIN_CONFIDENCE
     from agents import REGEL_MIN_CONFLUENCE

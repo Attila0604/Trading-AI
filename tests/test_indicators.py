@@ -77,13 +77,9 @@ def test_confluence_bleibt_im_bereich():
         assert 1 <= ind["confluenceScore"] <= 10
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Ein überverkaufter RSI (<30, also ein KAUF-Argument) erhöht die "
-    "Confluence eines SHORT-Signals. Gegenläufige Indikatoren werden als "
-    "Bestätigung gezählt."))
 def test_rsi_ueberverkauft_staerkt_kein_short_signal():
-    # Steiler Abwärtstrend -> RSI < 30, MACD bearish, Kurs < EMA20 < EMA50
-    closes = [200 * (0.985 ** i) for i in range(120)]
+    # Beschleunigter Abwärtstrend -> RSI < 30, MACD bearish, Kurs < EMA20 < EMA50
+    closes = [200.0] * 60 + [200 * (0.99 ** (k * k / 40)) for k in range(60)]
     ind = calculate_all_indicators(kerzen_aus_closes(closes))
     assert ind["rsi"] < 30 and ind["trend"] == "downtrend"
     assert ind["signal"] in ("sell", "strong sell")
@@ -91,21 +87,25 @@ def test_rsi_ueberverkauft_staerkt_kein_short_signal():
     assert ind["confluenceScore"] <= 7
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Bei völlig flachem Kurs (keine Gewinne UND keine Verluste, z.B. eingefrorener "
-    "Datenfeed) liefert rsi() 100 statt 50 -> 'sell'-Signal mit Confluence 7, also über "
-    "der Handelsschwelle."))
 def test_flacher_kurs_erzeugt_kein_signal():
     ind = calculate_all_indicators(kerzen_aus_closes([100.0] * 250))
     assert ind["signal"] == "neutral"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Spiegelbild zum RSI-Befund - ein ÜBERKAUFTER RSI (>70) erhöht die Confluence "
-    "eines LONG-Signals. In einer reinen Seitwärts-Welle feuern so Long-Signale mit "
-    "Confluence 8 genau am Hoch der Welle."))
 def test_rsi_ueberkauft_staerkt_kein_long_signal():
     closes = [100 + 2 * math.sin(i / 4) for i in range(233)]
     ind = calculate_all_indicators(kerzen_aus_closes(closes))
     assert ind["rsi"] > 70 and ind["signal"] in ("buy", "strong buy")
     assert ind["confluenceScore"] <= 7
+
+
+def test_bollinger_ausbruch_zaehlt_nur_in_signalrichtung():
+    # Aufwärtstrend, der am Ende über das obere Band ausbricht -> +1
+    closes = trend_closes(welle=0) + [trend_closes(welle=0)[-1] * 1.08]
+    ind = calculate_all_indicators(kerzen_aus_closes(closes))
+    assert ind["signal"] in ("buy", "strong buy") and ind["bollinger"]["position"] == "breakout_up"
+    assert ind["confluenceScore"] == (9 if ind["signal"] == "strong buy" else 8)
+
+
+def test_rsi_flach_ist_neutral():
+    assert rsi([100.0] * 30) == 50.0

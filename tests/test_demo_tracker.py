@@ -117,24 +117,37 @@ def test_drawdown_pause_greift(frischer_tracker):
     assert frischer_tracker.signal_oeffnen(_signal("NEU")).get("abgelehnt")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Die Drawdown-Pause hebt sich nie wieder auf. Der Drawdown wird nur aus "
-    "GESCHLOSSENEN Trades berechnet; in der Pause werden keine Trades geöffnet, also "
-    "kann sich das Kapital nie erholen -> das System bleibt dauerhaft stehen."))
 def test_drawdown_pause_hat_ausweg(frischer_tracker, monkeypatch):
     _verluste_buchen(frischer_tracker, 12)
     assert not frischer_tracker.get_risiko_status()["neue_trades_erlaubt"]
-    # Selbst 30 Tage später ändert sich nichts an der Entscheidung:
+    # Nach DD_PAUSE_TAGE ohne neuen Verlust: vorsichtiger Neustart
     import demo_tracker
-    spaeter = jetzt() + timedelta(days=30)
+    spaeter = jetzt() + timedelta(days=demo_tracker.DD_PAUSE_TAGE + 1)
     monkeypatch.setattr(demo_tracker, "jetzt", lambda: spaeter)
-    assert frischer_tracker.get_risiko_status()["neue_trades_erlaubt"]
+    r = frischer_tracker.get_risiko_status()
+    assert r["stufe"] == "NEUSTART" and r["einsatz_faktor"] == demo_tracker.DD_VORSICHT_FAKTOR
+    t = frischer_tracker.signal_oeffnen(_signal("NEU"))
+    assert t.get("ID") and "Schutz ×0.5" in t["MM-Begründung"]
+    # Ein weiterer Verlust startet die Wartezeit neu
+    frischer_tracker.trade_schliessen(t["ID"], "verloren")
+    assert frischer_tracker.get_risiko_status()["stufe"] == "PAUSE"
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: MAX_RISK_PCT (Env) und der Risiko-Regler im Dashboard (risk_pct) wirken "
-    "nicht auf den Einsatz. fixed_percent nimmt immer den Modus-Default 2 %."))
+def test_pause_ohne_ausweg_wenn_abgeschaltet(frischer_tracker, monkeypatch):
+    import demo_tracker
+    monkeypatch.setattr(demo_tracker, "DD_PAUSE_TAGE", 0.0)
+    _verluste_buchen(frischer_tracker, 12)
+    spaeter = jetzt() + timedelta(days=365)
+    monkeypatch.setattr(demo_tracker, "jetzt", lambda: spaeter)
+    assert frischer_tracker.get_risiko_status()["stufe"] == "PAUSE"
+
+
 def test_max_risk_pct_wirkt_auf_einsatz(frischer_tracker, monkeypatch):
     monkeypatch.setattr(frischer_tracker, "RISIKO_PROZENT", 1.0)
     t = frischer_tracker.signal_oeffnen(_signal())
     assert t["Einsatz"] == 10.0
+
+
+def test_risk_pct_aus_signal_hat_vorrang(frischer_tracker):
+    t = frischer_tracker.signal_oeffnen(_signal(mm_params={"risk_pct": 3.0}))
+    assert t["Einsatz"] == 30.0

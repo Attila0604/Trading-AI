@@ -1,5 +1,5 @@
 # Trading Multi-Agent v3.3 - Update 25.09.2026 (Regeln + KI-Veto)
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Header, Depends, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -118,11 +118,25 @@ config_laden()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ─── Schreibschutz für kritische Endpoints ───────────────────────────────────
-# Greift NUR, wenn die Env-Variable API_TOKEN gesetzt ist. Ohne sie bleibt
-# alles offen wie bisher - so kann man sich nicht versehentlich aussperren.
-def pruefe_token(x_api_token: str = Header(default="")):
+# ─── Zugriffsschutz ──────────────────────────────────────────────────────────
+# Gilt für ALLE Endpoints außer dem Dashboard selbst und /status (Railway-
+# Healthcheck). Vorher waren nur schreibende Endpoints geschützt - Kontostand,
+# Positionen und der komplette Excel-Download waren für jeden mit der URL offen.
+#
+# Ohne API_TOKEN bleibt alles offen wie bisher (man kann sich nicht
+# versehentlich aussperren) - AUSSER echten Orders: /trade und /close/...
+# verlangen einen gesetzten Token.
+OFFENE_PFADE = {"/", "/status"}
+
+
+def pruefe_token(request: Request, x_api_token: str = Header(default="")):
+    pfad = request.url.path
+    if pfad in OFFENE_PFADE:
+        return True
     if not API_TOKEN:
+        if pfad == "/trade" or pfad.startswith("/close/"):
+            raise HTTPException(status_code=403,
+                                detail="Echte Orders erst nach Setzen von API_TOKEN möglich")
         return True   # Schutz nicht konfiguriert -> alles erlaubt
     if x_api_token != API_TOKEN:
         log.warning("🔒 Zugriff abgelehnt: falscher/fehlender API-Token")
@@ -508,7 +522,8 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="Trading Multi-Agent v3.1", lifespan=lifespan)
+app = FastAPI(title="Trading Multi-Agent v3.3", lifespan=lifespan,
+              dependencies=[Depends(pruefe_token)])
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -639,15 +654,18 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
 
         # ── Trading-Modus durchsetzen (war bisher wirkungslos!) ──────────
         # "analyse" = nur Signale anzeigen, KEINE Demo-Trades öffnen
+        # Das Dashboard speichert "analysis", ältere Configs "analyse" -
+        # vorher wurde nur "analyse" erkannt, der Knopf war also wirkungslos.
         modus = active_config.get("mode", "semi")
-        if modus == "analyse" and all_signals:
+        nur_analyse = modus in ("analyse", "analysis")
+        if nur_analyse and all_signals:
             log.info(f"📊 Modus 'Nur Analyse': {len(all_signals)} Signal(e) angezeigt, keine Trades geöffnet")
         # ─────────────────────────────────────────────────────────────────
 
         for signal in all_signals:
             if not risk_ok:
                 continue
-            if modus == "analyse":
+            if nur_analyse:
                 trades_übersprungen += 1
                 continue
             if signal.get("confidence", 0) < active_config["conf"]:
@@ -700,6 +718,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     "entry_price":    entry_price,
                     "strategyUsed":   result.get("strategyUsed", req.strategy),
                     "mm_modus":       active_config["mm_modus"],
+                    "mm_params":      {"risk_pct": active_config["risk_pct"]},
                     "volatility_pct": vola_lookup.get(asset, 0),
                     "sessionScore":   result.get("sessionScore", 0),
                 })
@@ -712,6 +731,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                 "entry_price":    entry_price,
                 "strategyUsed":   result.get("strategyUsed", req.strategy),
                 "mm_modus":       active_config["mm_modus"],
+                "mm_params":      {"risk_pct": active_config["risk_pct"]},
                 "volatility_pct": vola_lookup.get(asset, 0),
                 "sessionScore":   result.get("sessionScore", 0),
             })
@@ -746,7 +766,7 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         if wochenende:
             msg += f"📅 _Wochenende: nur BTC/ETH handelbar_\n"
         if trades_übersprungen > 0:
-            msg += f"⏭ {trades_übersprungen} Asset(s) übersprungen (Wochenende)\n"
+            msg += f"⏭ {trades_übersprungen} Signal(e) nicht gehandelt ({'Modus Nur Analyse' if nur_analyse else 'Wochenende'})\n"
 
         msg += f"💡 {overview}\n\n"
 
@@ -860,7 +880,7 @@ async def dashboard():
         return HTMLResponse(content=f.read())
 
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks = None, _auth: bool = Depends(pruefe_token)):
+async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks = None):
     if req is None:
         req = AnalyzeRequest()
     if pipeline_running:
@@ -869,7 +889,7 @@ async def analyze(req: AnalyzeRequest = None, background_tasks: BackgroundTasks 
     return {"status": "gestartet", "assets": req.assets, "strategy": req.strategy}
 
 @app.post("/config/speichern")
-async def config_speichern(req: ConfigRequest, _auth: bool = Depends(pruefe_token)):
+async def config_speichern(req: ConfigRequest):
     alte_strategie = active_config["strategy"]
     if req.assets   is not None: active_config["assets"]   = req.assets
     if req.strategy is not None: active_config["strategy"] = req.strategy
@@ -1039,7 +1059,7 @@ async def selftest():
     }
 
 @app.post("/backtest/optimieren")
-async def backtest_optimieren(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
+async def backtest_optimieren(req: BacktestRequest = None):
     """
     Probiert systematisch SL/TP-Verhältnisse und Signal-Schwellen durch und
     zeigt, welche Kombination auf diesem Asset einen echten Vorsprung hätte.
@@ -1061,7 +1081,7 @@ async def backtest_optimieren(req: BacktestRequest = None, _auth: bool = Depends
     return res
 
 @app.post("/backtest")
-async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pruefe_token)):
+async def backtest_starten(req: BacktestRequest = None):
     """
     Regelbasierter Backtest über historische Kerzen. Vergleicht alle 6
     Money-Management-Modi über dieselbe Trade-Sequenz (RSI/MACD/EMA/BB, ohne LLM).
@@ -1107,7 +1127,7 @@ async def backtest_starten(req: BacktestRequest = None, _auth: bool = Depends(pr
     return res
 
 @app.post("/trade")
-async def place_trade(req: TradeRequest, _auth: bool = Depends(pruefe_token)):
+async def place_trade(req: TradeRequest):
     if not capital.is_connected():
         if not await capital.connect():
             raise HTTPException(status_code=503, detail="Capital.com nicht verbunden")
@@ -1131,7 +1151,7 @@ async def get_positions():
     return await capital.get_positions()
 
 @app.post("/close/{deal_id}")
-async def close_position(deal_id: str, _auth: bool = Depends(pruefe_token)):
+async def close_position(deal_id: str):
     if not capital.is_connected():
         await capital.connect()
     result = await capital.close_position(deal_id)
@@ -1177,7 +1197,7 @@ async def demo_report():
     return {"report": generiere_tages_report()}
 
 @app.post("/demo/report/senden")
-async def demo_report_senden(_auth: bool = Depends(pruefe_token)):
+async def demo_report_senden():
     tages_snapshot()
     report = generiere_tages_report()
     send_whatsapp(report)
@@ -1220,7 +1240,7 @@ async def demo_trade_markt(trade_id: str):
 
 
 @app.post("/demo/trade/{trade_id}/schliessen")
-async def demo_trade_schliessen(trade_id: str, ergebnis: str = "markt", _auth: bool = Depends(pruefe_token)):
+async def demo_trade_schliessen(trade_id: str, ergebnis: str = "markt"):
     """
     ergebnis = markt     → zum aktuellen Kurs schließen (echter P&L, Default)
                gewonnen  → voller TP-Betrag
@@ -1249,7 +1269,7 @@ async def demo_trade_schliessen(trade_id: str, ergebnis: str = "markt", _auth: b
     return {"status": "geschlossen", "ergebnis": ergebnis, "trade": trade}
 
 @app.post("/demo/reset")
-async def demo_reset(bestaetigung: str = "", _auth: bool = Depends(pruefe_token)):
+async def demo_reset(bestaetigung: str = ""):
     """
     Archiviert den laufenden Tracker und startet bei 0.
     Verlangt ?bestaetigung=RESET, damit es nicht versehentlich passiert.
@@ -1282,7 +1302,7 @@ async def demo_trades_offen():
     return {"trades": offene, "anzahl": len(offene)}
 
 @app.post("/schedule/pause")
-async def pause_schedule(_auth: bool = Depends(pruefe_token)):
+async def pause_schedule():
     try:
         scheduler.pause_job("morgen_analyse")
         return {"status": "pausiert"}
@@ -1291,7 +1311,7 @@ async def pause_schedule(_auth: bool = Depends(pruefe_token)):
         raise HTTPException(status_code=400, detail=f"Zeitplan konnte nicht pausiert werden: {e}")
 
 @app.post("/schedule/resume")
-async def resume_schedule(_auth: bool = Depends(pruefe_token)):
+async def resume_schedule():
     try:
         scheduler.resume_job("morgen_analyse")
         return {"status": "aktiv"}
@@ -1333,7 +1353,7 @@ async def demo_risiko():
     return get_risiko_status()
 
 @app.post("/connect")
-async def connect_capital(_auth: bool = Depends(pruefe_token)):
+async def connect_capital():
     ok = await capital.connect()
     return {"connected": ok}
 

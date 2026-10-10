@@ -31,7 +31,7 @@ from money_management import berechne_einsatz
 from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
                     MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS,
                     STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT,
-                    DD_PAUSE_PCT, DD_VORSICHT_PCT, DD_VORSICHT_FAKTOR,
+                    DD_PAUSE_PCT, DD_VORSICHT_PCT, DD_VORSICHT_FAKTOR, DD_PAUSE_TAGE,
                     MAX_EXPOSURE_PCT, MAX_OFFENE_TRADES, EIN_TRADE_PRO_ASSET,
                     MAX_GLEICHE_RICHTUNG, FINANZIERUNG_AN, FINANZIERUNG_SAETZE,
                     FINANZIERUNG_STANDARD, jetzt)
@@ -255,6 +255,19 @@ def _signalvergleich(echte: list, vetos: list) -> dict:
     }
 
 
+def _mm_params(signal: dict) -> dict:
+    """
+    Money-Management-Parameter für einen Trade. risk_pct kommt aus dem Signal
+    (main.py reicht den Dashboard-Regler durch), sonst aus MAX_RISK_PCT.
+    Vorher nahm fixed_percent IMMER den Modus-Default von 2 % - der Regler
+    und die Env-Variable waren wirkungslos.
+    """
+    params = dict(signal.get("mm_params") or {})
+    if params.get("risk_pct") is None:
+        params["risk_pct"] = RISIKO_PROZENT
+    return params
+
+
 def _ist_long(action) -> bool:
     return str(action or "").strip().lower() in ("buy", "long")
 
@@ -340,11 +353,28 @@ def _kapitalkurve(trades: list) -> list:
         zeit = _parse_zeit(t.get("Geschlossen am"))
         kurve.append({
             "datum":    zeit.strftime("%d.%m.") if zeit else str(t.get("Datum", "")),
+            "zeit":     zeit.isoformat() if zeit else "",
             "kapital":  round(kapital, 2),
             "trade_id": t.get("ID", ""),
             "pnl":      round(pnl, 2),
         })
     return kurve
+
+
+def _pause_seit(kurve: list) -> str:
+    """
+    Zeitpunkt des letzten VERLUSTS, nach dem der Drawdown im Pause-Bereich lag.
+    Ab hier läuft die Wartezeit DD_PAUSE_TAGE. Gewinne setzen sie nicht zurück,
+    jeder weitere Verlust im Pause-Bereich schon.
+    """
+    seit = ""
+    peak = kurve[0]["kapital"] if kurve else STARTKAPITAL
+    for p in kurve:
+        peak = max(peak, p["kapital"])
+        dd = (peak - p["kapital"]) / peak * 100 if peak > 0 else 0.0
+        if dd >= DD_PAUSE_PCT and p.get("pnl", 0) < 0:
+            seit = p.get("zeit", "")
+    return seit
 
 
 def _drawdowns(kurve: list) -> tuple:
@@ -457,6 +487,7 @@ def get_statistik() -> dict:
             "offene_exposure": offene_exposure,
             "offene_exposure_pct": offene_exposure_pct,
             "offene_pro_asset": offene_pro_asset,
+            "pause_seit": _pause_seit(kurve),
         },
         # Chart-Daten: ein Punkt pro geschlossenem Trade (Start + jeder Abschluss)
         "tages_snapshots": [{"datum": p["datum"], "kapital": p["kapital"]} for p in kurve],
@@ -483,9 +514,19 @@ def _risiko_aus_stats(stats: dict) -> dict:
     stufe   = "NORMAL"
 
     if dd >= DD_PAUSE_PCT:
-        stufe = "PAUSE"
-        faktor = 0.0
-        gruende.append(f"Drawdown {dd:.1f}% ≥ {DD_PAUSE_PCT:.0f}% → keine neuen Trades bis Erholung")
+        seit = _parse_zeit(s.get("pause_seit"))
+        tage = (jetzt() - seit).total_seconds() / 86400 if seit else 0.0
+        if DD_PAUSE_TAGE > 0 and seit and tage >= DD_PAUSE_TAGE:
+            stufe = "NEUSTART"
+            faktor = DD_VORSICHT_FAKTOR
+            gruende.append(f"Drawdown {dd:.1f}% ≥ {DD_PAUSE_PCT:.0f}%, aber {tage:.0f} Tage ohne neuen "
+                           f"Verlust → vorsichtiger Neustart, Einsatz × {DD_VORSICHT_FAKTOR:g}")
+        else:
+            stufe = "PAUSE"
+            faktor = 0.0
+            rest = (f" (Neustart in {max(0.0, DD_PAUSE_TAGE - tage):.0f} Tagen)"
+                    if DD_PAUSE_TAGE > 0 and seit else "")
+            gruende.append(f"Drawdown {dd:.1f}% ≥ {DD_PAUSE_PCT:.0f}% → keine neuen Trades{rest}")
     elif dd >= DD_VORSICHT_PCT:
         stufe = "VORSICHT"
         faktor = DD_VORSICHT_FAKTOR
@@ -517,6 +558,7 @@ def _risiko_aus_stats(stats: dict) -> dict:
             "dd_pause_pct":        DD_PAUSE_PCT,
             "dd_vorsicht_pct":     DD_VORSICHT_PCT,
             "dd_vorsicht_faktor":  DD_VORSICHT_FAKTOR,
+            "dd_pause_tage":       DD_PAUSE_TAGE,
             "max_exposure_pct":    MAX_EXPOSURE_PCT,
             "max_offene_trades":   MAX_OFFENE_TRADES,
             "ein_trade_pro_asset": EIN_TRADE_PRO_ASSET,
@@ -595,7 +637,7 @@ def signal_oeffnen(signal: dict, einsatz_faktor: float = 1.0) -> dict:
             "volatility_pct":       signal.get("volatility_pct", 0),
             "letzte_trades":        stats.get("letzte_trades", []),
         },
-        params=signal.get("mm_params"),
+        params=_mm_params(signal),
     )
     einsatz          = round(float(mm["einsatz"]) * faktor, 2)
     mm_modus_genutzt = mm["modus"]
@@ -807,6 +849,7 @@ def veto_protokollieren(signal: dict) -> dict:
              "sl_pct": sl_pct, "tp_pct": tp_pct,
              "volatility_pct": signal.get("volatility_pct", 0),
              "letzte_trades": stats.get("letzte_trades", [])},
+        params=_mm_params(signal),
     )
     einsatz = round(float(mm["einsatz"]), 2)
     rr  = round(tp_pct / sl_pct, 2) if sl_pct > 0 else 0

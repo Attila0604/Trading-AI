@@ -402,7 +402,7 @@ button:hover{filter:brightness(1.15)}
 <script>
 // ═══ STATE ════════════════════════════════════════════════════════════
 let signals=[], demoData={}, pipelineRunning=false;
-let cfg={assets:["EUR/USD","BTC/USD","XAU/USD","US500"],strategy:"adaptive",risk:2,sl:1.5,tp:3,size:1000,conf:70,mode:"semi",mm_modus:"fixed_percent"};
+let cfg={assets:["EUR/USD","BTC/USD","XAU/USD","US500"],strategy:"adaptive",risk:2,sl:1.5,tp:3,size:1000,conf:60,mode:"semi",mm_modus:"fixed_percent"};
 const STRATS=[
   {id:"trend",name:"Trend Following",tf:"4H-1D"},{id:"reversion",name:"Mean Reversion",tf:"1H-4H"},
   {id:"breakout",name:"Breakout Hunter",tf:"1H-4H"},{id:"news",name:"News Catalyst",tf:"5M-1H"},
@@ -411,13 +411,20 @@ const STRATS=[
 
 // ═══ UTILS ════════════════════════════════════════════════════════════
 const nowT=()=>new Date().toLocaleTimeString("de-AT");
+// Alles, was vom Server kommt (KI-Texte aus der Websuche, Excel-Inhalte,
+// Fehlermeldungen), wird vor dem Einfügen per innerHTML escaped. Sonst kann
+// eine präparierte Webseite über die KI-Zusammenfassung Script einschleusen
+// und z.B. den API-Token aus localStorage lesen.
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// IDs landen in onclick-Attributen -> nur harmlose Zeichen zulassen
+const safeId=v=>/^[A-Za-z0-9_.\-]+$/.test(String(v??""))?String(v):"";
 const fmt=(n,dec=2)=>n!=null?Number(n).toLocaleString("de-AT",{minimumFractionDigits:dec,maximumFractionDigits:dec}):"—";
 const fmtP=(n,dec=4)=>n!=null?Number(n).toFixed(dec):"—";
 function toast(msg,type="inf"){const t=document.getElementById("toast");t.textContent=msg;t.className="toast "+type+" show";setTimeout(()=>t.classList.remove("show"),3000);}
 function logMsg(emoji,msg,cls="log-info"){
   const box=document.getElementById("log-box");
   const row=document.createElement("div");row.className="log-row";
-  row.innerHTML=`<span class="log-t">${nowT()}</span><span>${emoji}</span><span class="${cls}">${msg}</span>`;
+  row.innerHTML=`<span class="log-t">${nowT()}</span><span>${emoji}</span><span class="${cls}">${esc(msg)}</span>`;
   box.appendChild(row);box.scrollTop=box.scrollHeight;
 }
 function setAgent(id,state){
@@ -441,7 +448,10 @@ async function api(path,method="GET",body=null,retry=true){
     if(body)opts.body=JSON.stringify(body);
     const r=await fetch(path,opts);
     if(r.status===401){
-      if(retry&&tokenAbfragen())return await api(path,method,body,false);
+      // Mehrere Abfragen laufen parallel: wurde der Token inzwischen
+      // (von einer anderen Abfrage) gesetzt, einfach neu versuchen statt
+      // ein zweites Mal zu fragen.
+      if(retry&&(getToken()!==tok||tokenAbfragen()))return await api(path,method,body,false);
       toast("🔒 Nicht autorisiert - Token fehlt oder falsch","err");
       return null;
     }
@@ -469,6 +479,8 @@ function berechneMoneyManagement(stats, kapital, startkapital, risiko) {
     stufeColor = "var(--orange)"; statusColor = "var(--orange)"; statusText = "EXPOSURE VOLL";
   } else if (stufe === "VORSICHT") {
     stufeColor = "var(--orange)"; statusColor = "var(--orange)"; statusText = "VORSICHT";
+  } else if (stufe === "NEUSTART") {
+    stufeColor = "var(--orange)"; statusColor = "var(--orange)"; statusText = "NEUSTART NACH PAUSE";
   }
   if (r.gruende && r.gruende.length) alert = "🛡️ " + r.gruende.join(" · ");
 
@@ -606,8 +618,8 @@ function renderDemoStats(stats, sv){
   }
   wrap.innerHTML=rows.map(([l,v,c])=>`
     <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033">
-      <span style="color:var(--muted);font-size:10px">${l}</span>
-      <span style="color:${c};font-size:11px;font-weight:600;font-family:var(--font)">${v}</span>
+      <span style="color:var(--muted);font-size:10px">${esc(l)}</span>
+      <span style="color:${c};font-size:11px;font-weight:600;font-family:var(--font)">${esc(v)}</span>
     </div>`).join("");
 }
 
@@ -690,7 +702,7 @@ function renderOffeneTrades(trades){
     const slPct = parseFloat(tv(t,"SL %","sl_pct")||1.5);
     const tpPct = parseFloat(tv(t,"TP %","tp_pct")||3.0);
     const act   = String(tv(t,"Action","action")||"").toLowerCase();
-    const tid   = tv(t,"ID","id")||"—";
+    const tid   = safeId(tv(t,"ID","id"))||"—";
     const isBuy = act === "buy" || act === "long";
 
     // Absoluter SL/TP Preis berechnen
@@ -711,16 +723,16 @@ function renderOffeneTrades(trades){
 
     return`<tr>
       <td>${tid}</td>
-      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
-      <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${act.toUpperCase()}</span></td>
+      <td style="color:var(--cyan);font-weight:700">${esc(tv(t,"Asset","asset")||"—")}</td>
+      <td><span style="color:${isBuy?"var(--green)":"var(--red)"};font-weight:700">${esc(act.toUpperCase())}</span></td>
       <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
       <td style="color:var(--gold);font-weight:600">${entry>0?fmtP(entry):"—"}</td>
       <td style="color:${beAktiv?"var(--gold)":"var(--red)"};font-weight:600">${slPreis}</td>
       <td style="color:var(--green);font-weight:600">${tpPreis}</td>
-      <td style="color:var(--red)">${slPct}%</td>
-      <td style="color:var(--green)">${tpPct}%</td>
-      <td style="color:${(tv(t,"Konfidenz","konfidenz")||0)>=70?"var(--green)":"var(--gold)"}">${tv(t,"Konfidenz","konfidenz")||0}%</td>
-      <td style="color:var(--muted);font-size:9px">${tv(t,"Geöffnet am","geoeffnet_am")||"—"}</td>
+      <td style="color:var(--red)">${esc(slPct)}%</td>
+      <td style="color:var(--green)">${esc(tpPct)}%</td>
+      <td style="color:${(tv(t,"Konfidenz","konfidenz")||0)>=70?"var(--green)":"var(--gold)"}">${esc(tv(t,"Konfidenz","konfidenz")||0)}%</td>
+      <td style="color:var(--muted);font-size:9px">${esc(tv(t,"Geöffnet am","geoeffnet_am")||"—")}</td>
       <td><div style="display:flex;gap:4px">
         <button onclick="schliesseMarkt('${tid}')" title="Zum aktuellen Marktpreis schließen (echter P&amp;L)" style="background:#f5c54222;color:var(--gold);border:1px solid #f5c54244;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer;font-weight:700">💱 Markt</button>
         <button onclick="schliesseDemo('${tid}','gewonnen')" title="Als voller TP buchen" style="background:#10b98122;color:var(--green);border:1px solid #10b98144;border-radius:3px;padding:2px 7px;font-size:9px;cursor:pointer">✅</button>
@@ -745,14 +757,14 @@ function renderLetzteTrades(trades){
     const color=st==="gewonnen"?"var(--green)":st==="verloren"?"var(--red)":"var(--muted)";
     const emoji=st==="gewonnen"?"✅":st==="verloren"?"❌":"⏸";
     return`<tr>
-      <td>${tv(t,"ID","id")||"—"}</td>
-      <td style="color:var(--cyan);font-weight:700">${tv(t,"Asset","asset")||"—"}</td>
-      <td><span style="color:${String(tv(t,"Action","action")||"").toLowerCase()==="buy"?"var(--green)":"var(--red)"}">${String(tv(t,"Action","action")||"").toUpperCase()}</span></td>
+      <td>${esc(tv(t,"ID","id")||"—")}</td>
+      <td style="color:var(--cyan);font-weight:700">${esc(tv(t,"Asset","asset")||"—")}</td>
+      <td><span style="color:${String(tv(t,"Action","action")||"").toLowerCase()==="buy"?"var(--green)":"var(--red)"}">${esc(String(tv(t,"Action","action")||"").toUpperCase())}</span></td>
       <td style="color:var(--gold)">${entry>0?fmtP(entry):"—"}</td>
       <td>€${fmt(tv(t,"Einsatz","einsatz")||0)}</td>
-      <td><span style="color:${color};font-weight:700">${emoji} ${st.toUpperCase()}</span></td>
+      <td><span style="color:${color};font-weight:700">${emoji} ${esc(st.toUpperCase())}</span></td>
       <td style="color:${pnl>=0?"var(--green)":"var(--red)"};font-weight:700">${pnl>=0?"+":""}€${fmt(pnl)}</td>
-      <td style="color:var(--muted);font-size:9px">${tv(t,"Geschlossen am","geschlossen_am")||"—"}</td>
+      <td style="color:var(--muted);font-size:9px">${esc(tv(t,"Geschlossen am","geschlossen_am")||"—")}</td>
     </tr>`;
   }).join("")}
   </tbody></table></div>`;
@@ -777,7 +789,21 @@ async function schliesseDemo(id,ergebnis){
   else toast("Fehler","err");
 }
 
-function excelDownload(){window.open("/excel-download","_blank");toast("Excel wird heruntergeladen...","ok");}
+async function excelDownload(retry=true){
+  // fetch statt window.open: nur so kann der API-Token mitgeschickt werden
+  try{
+    const tok=getToken();
+    const r=await fetch("/excel-download",{headers:tok?{"X-API-Token":tok}:{}});
+    if(r.status===401){if(retry&&tokenAbfragen())return excelDownload(false);toast("🔒 Nicht autorisiert","err");return;}
+    if(!r.ok){toast("Excel nicht gefunden","err");return;}
+    const url=URL.createObjectURL(await r.blob());
+    const a=document.createElement("a");a.href=url;
+    a.download=`Trading_Tracker_${new Date().toISOString().slice(0,10).replace(/-/g,"")}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast("Excel wird heruntergeladen...","ok");
+  }catch(e){toast("Download fehlgeschlagen","err");}
+}
 async function reportSenden(){const r=await api("/demo/report/senden","POST");if(r&&r.status==="gesendet")toast("Report gesendet!","ok");else toast("Fehler","err");}
 
 // ═══ KONFIGURATION ════════════════════════════════════════════════════
@@ -801,12 +827,12 @@ function updateConfigPreview(){
   if(!el)return;
   el.innerHTML=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
-      <span style="color:var(--muted)">Strategie:</span><span style="color:var(--cyan)">${cfg.strategy}</span>
-      <span style="color:var(--muted)">Assets:</span><span style="color:var(--text)">${cfg.assets.join(", ")}</span>
+      <span style="color:var(--muted)">Strategie:</span><span style="color:var(--cyan)">${esc(cfg.strategy)}</span>
+      <span style="color:var(--muted)">Assets:</span><span style="color:var(--text)">${esc(cfg.assets.join(", "))}</span>
       <span style="color:var(--muted)">Max Risiko:</span><span style="color:var(--gold)">${cfg.risk}%</span>
       <span style="color:var(--muted)">SL/TP:</span><span style="color:var(--text)">${cfg.sl}% / ${cfg.tp}%</span>
       <span style="color:var(--muted)">Konfidenz:</span><span style="color:var(--green)">${cfg.conf}%</span>
-      <span style="color:var(--muted)">Modus:</span><span style="color:var(--text)">${cfg.mode}</span>
+      <span style="color:var(--muted)">Modus:</span><span style="color:var(--text)">${esc(cfg.mode)}</span>
       <span style="color:var(--muted)">Money-Mgmt:</span><span style="color:var(--gold)">${(MM_MODI.find(m=>m.id===cfg.mm_modus)||{}).name||cfg.mm_modus}</span>
     </div>`;
 }
@@ -826,10 +852,10 @@ async function configSpeichern(){
 function renderAssets(){
   const wrap=document.getElementById("asset-chips");if(!wrap)return;
   wrap.innerHTML="";
-  cfg.assets.forEach(a=>{
+  cfg.assets.forEach((a,i)=>{
     const div=document.createElement("div");
     div.style.cssText="display:flex;align-items:center;gap:4px;background:var(--s);border:1px solid var(--b);border-radius:4px;padding:3px 9px;font-size:11px;color:var(--cyan);font-weight:500";
-    div.innerHTML=`${a}<span style="color:var(--muted);cursor:pointer;font-size:10px" onclick="removeAsset('${a}')">×</span>`;
+    div.innerHTML=`${esc(a)}<span style="color:var(--muted);cursor:pointer;font-size:10px" onclick="removeAssetIdx(${i})">×</span>`;
     wrap.appendChild(div);
   });
   const cnt=document.getElementById("aktive-assets-count");
@@ -839,6 +865,7 @@ function renderAssets(){
 }
 function addAsset(){const inp=document.getElementById("asset-inp");const v=inp.value.trim().toUpperCase();if(v&&!cfg.assets.includes(v)){cfg.assets.push(v);inp.value="";renderAssets();}}
 function removeAsset(a){cfg.assets=cfg.assets.filter(x=>x!==a);renderAssets();}
+function removeAssetIdx(i){cfg.assets.splice(i,1);renderAssets();}
 
 function renderStrats(){
   const g=document.getElementById("strat-grid");if(!g)return;g.innerHTML="";
@@ -897,10 +924,10 @@ async function trackerReset(){
   const r=await api("/demo/reset?bestaetigung=RESET","POST");
   btn.disabled=false; btn.textContent="🗃️ Neuen Abschnitt starten";
   if(r&&r.status==="zurückgesetzt"){
-    el.innerHTML=`<span style="color:var(--green)">✅ ${r.trades} Trades archiviert als <code>${r.archiviert}</code> — Start bei €${fmt(r.kapital_nachher)}</span>`;
+    el.innerHTML=`<span style="color:var(--green)">✅ ${esc(r.trades)} Trades archiviert als <code>${esc(r.archiviert)}</code> — Start bei €${fmt(r.kapital_nachher)}</span>`;
     toast("Neuer Abschnitt gestartet","ok"); setTimeout(ladeDemo,500); pollStatus();
   } else {
-    el.innerHTML=`<span style="color:var(--red)">Fehler: ${(r&&r.detail)||"unbekannt"}</span>`;
+    el.innerHTML=`<span style="color:var(--red)">Fehler: ${esc((r&&r.detail)||"unbekannt")}</span>`;
     toast("Reset fehlgeschlagen","err");
   }
 }
@@ -923,8 +950,8 @@ async function systemcheck(){
   r.checks.forEach(c=>{
     html+=`<div style="display:flex;gap:6px;padding:3px 0;border-top:1px solid var(--b);font-size:10px">
       <span>${sym[c.status]}</span>
-      <span style="color:var(--text);min-width:105px">${c.name}</span>
-      <span style="color:${farbe[c.status]};flex:1">${c.info}</span></div>`;
+      <span style="color:var(--text);min-width:105px">${esc(c.name)}</span>
+      <span style="color:${farbe[c.status]};flex:1">${esc(c.info)}</span></div>`;
   });
   box.innerHTML=html;
 }
@@ -937,10 +964,10 @@ async function parameterOptimieren(){
   const box=document.getElementById("bt-result");
   const btn=document.getElementById("bt-opt");
   btn.disabled=true;btn.textContent="⏳ suche…";
-  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Teste alle SL/TP-Kombinationen für <b>${asset}</b>…</div>`;
+  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Teste alle SL/TP-Kombinationen für <b>${esc(asset)}</b>…</div>`;
   const r=await api("/backtest/optimieren","POST",{asset:asset,resolution:res,count:cnt});
   btn.disabled=false;btn.textContent="🎯 Beste Einstellung finden";
-  if(!r||r.error){box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Optimierung fehlgeschlagen"}</div>`;return;}
+  if(!r||r.error){box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${esc(r&&r.error?r.error:"Optimierung fehlgeschlagen")}</div>`;return;}
   let html=`<div style="font-size:10px;color:var(--muted);margin-bottom:8px">🎯 ${r.signale} Signale | ${r.getestet} Kombinationen getestet | <b style="color:${r.profitabel>0?'var(--green)':'var(--red)'}">${r.profitabel} mit echtem Vorsprung</b></div>`;
   html+=`<table style="width:100%;font-size:10px;border-collapse:collapse">
     <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">SL / TP</td><td style="text-align:center">SCHW</td><td style="text-align:right">TRADES</td><td style="text-align:right">WIN</td><td style="text-align:right">NÖTIG</td><td style="text-align:right">VORSPRUNG</td><td style="text-align:right">PF</td></tr>`;
@@ -956,7 +983,7 @@ async function parameterOptimieren(){
       <td style="text-align:right;color:var(--text)">${x.profit_factor}</td>
     </tr>`;
   });
-  html+=`</table><div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 <b>VORSPRUNG</b> = Win-Rate minus der Rate, die dieses SL/TP-Verhältnis rechnerisch zum Break-even braucht. Nur positiv = echter Edge.<br>⚠️ ${r.hinweis}</div>`;
+  html+=`</table><div style="font-size:9px;color:var(--muted);margin-top:8px;line-height:1.5">💡 <b>VORSPRUNG</b> = Win-Rate minus der Rate, die dieses SL/TP-Verhältnis rechnerisch zum Break-even braucht. Nur positiv = echter Edge.<br>⚠️ ${esc(r.hinweis)}</div>`;
   box.innerHTML=html;
 }
 
@@ -964,7 +991,7 @@ async function parameterOptimieren(){
 function renderBacktestAssets(){
   const sel=document.getElementById("bt-asset");if(!sel)return;
   const prev=sel.value;
-  sel.innerHTML=cfg.assets.map(a=>`<option value="${a}">${a}</option>`).join("");
+  sel.innerHTML=cfg.assets.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`).join("");
   if(prev&&cfg.assets.includes(prev))sel.value=prev;
 }
 async function backtestStarten(){
@@ -972,14 +999,14 @@ async function backtestStarten(){
   const box=document.getElementById("bt-result");
   const btn=document.getElementById("bt-btn");
   btn.disabled=true;btn.textContent="⏳ läuft…";
-  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Backtest läuft für <b>${asset}</b> — Kerzen werden geladen…</div>`;
+  box.innerHTML=`<div style="color:var(--muted);font-size:11px;padding:8px 0">⏳ Backtest läuft für <b>${esc(asset)}</b> — Kerzen werden geladen…</div>`;
   const res=document.getElementById("bt-res").value;
   const cnt=parseInt(document.getElementById("bt-count").value);
   const mc=parseInt(document.getElementById("bt-conf").value);
   const r=await api("/backtest","POST",{asset:asset,resolution:res,count:cnt,min_confluence:mc});
   btn.disabled=false;btn.textContent="▶ Backtest starten";
   if(!r||r.error||!r.ergebnisse||!r.ergebnisse.length){
-    box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${r&&r.error?r.error:"Backtest fehlgeschlagen — genug Kerzen vorhanden?"}</div>`;
+    box.innerHTML=`<div style="color:var(--red);font-size:11px;padding:6px 0">⚠️ ${esc(r&&r.error?r.error:"Backtest fehlgeschlagen — genug Kerzen vorhanden?")}</div>`;
     return;
   }
   let html="";
@@ -994,7 +1021,7 @@ async function backtestStarten(){
     <tr style="color:var(--muted);font-size:9px"><td style="padding:3px 0">MODUS</td><td style="text-align:right">ROI</td><td style="text-align:right">MAX-DD</td><td style="text-align:right">PF</td></tr>`;
   r.ergebnisse.forEach((x,i)=>{
     const col=x.roi_pct>=0?"var(--green)":"var(--red)";
-    const name=i===0?"🏆 "+x.mm_name:x.mm_name;
+    const name=esc(i===0?"🏆 "+x.mm_name:x.mm_name);
     html+=`<tr style="border-top:1px solid var(--b)">
       <td style="padding:5px 0;color:${i===0?'var(--gold)':'var(--text)'};font-weight:${i===0?'700':'400'}">${name}</td>
       <td style="text-align:right;color:${col};font-weight:600">${x.roi_pct>=0?'+':''}${x.roi_pct}%</td>
@@ -1113,21 +1140,21 @@ function renderSignals(){
   wrap.innerHTML="";
   signals.forEach((s,i)=>{
     const buy=s.action==="buy";const bc=buy?"#10b981":"#f43f5e";
-    const div=document.createElement("div");div.className="signal-item "+s.action;
+    const div=document.createElement("div");div.className="signal-item "+(buy?"buy":"sell");
     div.innerHTML=`
       <div class="sig-head">
         <div style="display:flex;align-items:center;gap:7px">
-          <span class="badge" style="background:${bc}20;color:${bc};border:1px solid ${bc}44">${s.action.toUpperCase()}</span>
-          <span style="color:var(--text);font-size:15px;font-weight:700">${s.asset}</span>
+          <span class="badge" style="background:${bc}20;color:${bc};border:1px solid ${bc}44">${esc(String(s.action||"").toUpperCase())}</span>
+          <span style="color:var(--text);font-size:15px;font-weight:700">${esc(s.asset)}</span>
         </div>
-        <span class="badge" style="background:#52527020;color:var(--muted);border:1px solid #52527033">${s.confidence}%</span>
+        <span class="badge" style="background:#52527020;color:var(--muted);border:1px solid #52527033">${esc(s.confidence)}%</span>
       </div>
       <div class="sig-metrics">
         <div class="metric"><div class="metric-l">SL</div><div class="metric-v" style="color:#f43f5e">${Number(s.stopLoss||0).toFixed(1)}%</div></div>
         <div class="metric"><div class="metric-l">TP</div><div class="metric-v" style="color:#10b981">${Number(s.takeProfit||0).toFixed(1)}%</div></div>
         <div class="metric"><div class="metric-l">R:R</div><div class="metric-v" style="color:#22d3ee">${Number(s.riskReward||0).toFixed(1)}:1</div></div>
       </div>
-      <div class="sig-summary">${s.summary||""}</div>
+      <div class="sig-summary">${esc(s.summary||"")}</div>
       ${s.status==="pending"?`<div class="sig-btns"><button class="btn-ok" onclick="approveSig(${i})">✓ DEMO-TRADE ÖFFNEN</button><button class="btn-no" onclick="rejectSig(${i})">✕ ABLEHNEN</button></div>`:
       `<span class="badge" style="background:${s.status==="approved"?"#10b98120":"#52527020"};color:${s.status==="approved"?"#10b981":"var(--muted)"};border:1px solid ${s.status==="approved"?"#10b98133":"#52527033"};padding:4px 8px">${s.status==="approved"?"✓ GEÖFFNET":"✕ ABGELEHNT"}</span>`}`;
     wrap.appendChild(div);
@@ -1164,12 +1191,12 @@ async function ladePortfolio(){
     ${pos.positions.map(p=>{
       const pnl=p.pnl||0;const pc=pnl>=0?"#10b981":"#f43f5e";const dc=p.direction==="BUY"?"#10b981":"#f43f5e";
       return`<tr>
-        <td>${p.epic||"—"}</td>
-        <td><span class="badge" style="background:${dc}20;color:${dc};border:1px solid ${dc}44;font-size:9px">${p.direction}</span></td>
-        <td style="color:var(--muted)">${p.openLevel||"—"}</td>
-        <td>${p.currentBid||"—"}</td>
+        <td>${esc(p.epic||"—")}</td>
+        <td><span class="badge" style="background:${dc}20;color:${dc};border:1px solid ${dc}44;font-size:9px">${esc(p.direction)}</span></td>
+        <td style="color:var(--muted)">${esc(p.openLevel||"—")}</td>
+        <td>${esc(p.currentBid||"—")}</td>
         <td style="color:${pc};font-weight:600">${pnl>=0?"+":""}€${fmt(pnl)}</td>
-        <td><button onclick="closePos('${p.dealId}')" style="background:#f43f5e11;color:#f43f5e;border:1px solid #f43f5e33;border-radius:3px;padding:3px 8px;font-size:9px;cursor:pointer">CLOSE</button></td>
+        <td><button onclick="closePos('${safeId(p.dealId)}')" style="background:#f43f5e11;color:#f43f5e;border:1px solid #f43f5e33;border-radius:3px;padding:3px 8px;font-size:9px;cursor:pointer">CLOSE</button></td>
       </tr>`;
     }).join("")}
     </tbody></table>`;
@@ -1179,6 +1206,7 @@ async function closePos(id){
   if(!confirm("Position schließen?"))return;
   const r=await api("/close/"+id,"POST");
   if(!r){toast("Fehler beim Schließen","err");return;}
+  if(r.detail){toast("Fehler: "+r.detail,"err");return;}
   if(r.status==="blocked"){toast("🔒 Orders gesperrt (ORDERS_ENABLED)","err");return;}
   if(r.status==="error"||r.error){toast("Fehler: "+(r.error||"unbekannt"),"err");return;}
   toast("Position geschlossen","ok");setTimeout(ladePortfolio,1500);
@@ -1190,7 +1218,7 @@ async function ladeSettings(){
   if(s){
     document.getElementById("s-next").textContent=s.next_scheduled?new Date(s.next_scheduled).toLocaleString("de-AT"):"—";
     document.getElementById("sysinfo").innerHTML=[
-      ["Version","Multi-Agent v3.0"],
+      ["Version","Multi-Agent v3.3"],
       ["Agenten","7 KI-Agenten"],
       ["Assets",(s.assets||[]).join(", ")],
       ["Strategie",s.strategy||"—"],
@@ -1198,7 +1226,7 @@ async function ladeSettings(){
       ["Demo Kapital",s.demo_kapital?"€"+fmt(s.demo_kapital):"—"],
       ["Demo ROI",s.demo_roi!=null?(s.demo_roi>=0?"+":"")+s.demo_roi.toFixed(2)+"%":"—"],
       ["Win Rate",s.demo_win_rate!=null?s.demo_win_rate.toFixed(1)+"%":"—"],
-    ].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033"><span style="color:var(--muted);font-size:10px">${k}</span><span style="color:var(--text);font-size:10px">${v}</span></div>`).join("");
+    ].map(([k,v])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #18183033"><span style="color:var(--muted);font-size:10px">${k}</span><span style="color:var(--text);font-size:10px">${esc(v)}</span></div>`).join("");
     if(s.capital_connected){
       [document.getElementById("cap-badge"),document.getElementById("cap-badge2")].forEach(el=>{
         if(el){el.textContent="● Capital.com verbunden";el.style.cssText="background:#10b98120;color:#10b981;border:1px solid #10b98133";}

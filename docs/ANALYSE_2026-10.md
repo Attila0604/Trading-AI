@@ -1,5 +1,9 @@
 # Code-Analyse Trading Multi-Agent v3.3 (Stand 10.10.2026)
 
+> **Update 10.10.2026:** H1–H5, H7, H8 und der Modus-Fehler „Nur Analyse“
+> (Dashboard speichert `analysis`, Backend prüfte nur `analyse`) sind behoben,
+> siehe Abschnitt 6. Offen: K1–K4, H6, H9, M1–M7.
+
 Grundlage: vollständiges Lesen aller Module (~6.600 Zeilen), statische Prüfung
 (pyflakes) und eine neue Testsuite (`tests/`, 62 Tests). Capital.com, Claude und
 WhatsApp sind in den Tests durch Attrappen ersetzt. Echte Marktdaten wurden nicht
@@ -7,7 +11,7 @@ geladen (keine Zugangsdaten in dieser Umgebung).
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 51 passed, 11 xfailed
+pytest -q          # Stand nach den Fixes: 67 passed, 4 xfailed
 ```
 
 Jeder `xfail`-Test ist ein **dokumentierter Befund**: Er beschreibt das
@@ -83,3 +87,18 @@ ist so nicht einsatzfähig:
 12. Live-Order-Pfad komplett neu: Positionsgröße aus Einsatz/SL-Distanz/Kontraktgröße (`GET /markets/{epic}` liefert `minDealSize`, `lotSize`), BUY/SELL-Mapping, Deal-Bestätigung über `/confirms`, Veto- und Portfolio-Filter. Dazu ein eigener Integrationstest gegen das Demo-Konto. → K1–K4
 13. Statistische Auswertung: Erwartungswert in R mit 95 %-Konfidenzintervall, getrennt nach Asset und Signaltyp (RSI-Signal vs. Trend-Signal). Walk-forward-Backtest statt In-Sample-Optimierung.
 14. CI: GitHub-Action, die `pytest` bei jedem Push laufen lässt.
+
+---
+
+## 6. Umgesetzt (10.10.2026)
+
+| Befund | Änderung |
+|---|---|
+| H1 | `indicators.py`: RSI-Extrem zählt nur in Signalrichtung, Bollinger-Ausbruch nur in Signalrichtung (beim RSI-Signal auf der überdehnten Seite). |
+| H2 | `rsi()` liefert 50 bei völlig flachem Kurs. |
+| H3 | Neue Stufe `NEUSTART`: `DD_PAUSE_TAGE` (14) nach dem letzten Verlust im Pause-Bereich wird mit Einsatz × `DD_VORSICHT_FAKTOR` wieder gehandelt, jeder neue Verlust startet die Wartezeit neu. |
+| H4 | `risk_pct` (Dashboard-Regler) bzw. `MAX_RISK_PCT` wirkt jetzt auf den Einsatz (`demo_tracker._mm_params`). |
+| H5 | `MIN_CONFIDENCE`-Default 60. **Achtung:** Ein in `config.json` gespeicherter Wert (`conf`) hat Vorrang, im Dashboard prüfen. |
+| H7 | Dashboard: `esc()` für alle Server-/KI-Texte, IDs in `onclick` nur noch nach Whitelist. |
+| H8 | Token gilt global (außer `/` und `/status`); Excel-Download schickt den Token mit; `/trade` und `/close` ohne gesetzten `API_TOKEN` gesperrt. |
+| neu | Modus „Nur Analyse“ greift jetzt (`analysis` und `analyse`). |
