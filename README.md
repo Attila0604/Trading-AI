@@ -187,7 +187,9 @@ Greift in `demo_tracker.get_risiko_status()` **vor** jedem Demo-Trade – nicht 
 |---|---|---|
 | `DD_PAUSE_PCT` | 10 | Aktueller Drawdown vom Kapital-Hoch ≥ X % → keine neuen Trades |
 | `DD_VORSICHT_PCT` | 5 | Drawdown ≥ X % → Einsatz × `DD_VORSICHT_FAKTOR` |
-| `DD_VORSICHT_FAKTOR` | 0.5 | Einsatz-Faktor in der Vorsicht-Zone |
+| `DD_VORSICHT_FAKTOR` | 0.5 | Einsatz-Faktor in der Vorsicht-Zone (und beim Neustart nach der Pause) |
+| `DD_PAUSE_TAGE` | 14 | X Tage nach dem letzten Verlust im Pause-Bereich: vorsichtiger Neustart mit Einsatz × `DD_VORSICHT_FAKTOR`. Jeder weitere Verlust startet die Wartezeit neu. 0 = Pause hebt sich nie von selbst auf |
+| `MAX_RISK_PCT` | 2 | Einsatz pro Trade in % des Kapitals (Modus `fixed_percent`). Der Regler „Max Risiko / Trade“ im Dashboard überschreibt den Wert |
 | `MAX_EXPOSURE_PCT` | 15 | Summe offener Einsätze max. X % des Kapitals |
 | `MAX_OFFENE_TRADES` | 6 | Max. gleichzeitig offene Demo-Trades |
 | `EIN_TRADE_PRO_ASSET` | true | Kein zweiter Trade (auch nicht gegenläufig) im selben Asset |
@@ -248,7 +250,16 @@ Regel-Signal, fällt der KI-Aufruf ganz weg.
 | `REGEL_MIN_CONFLUENCE` | 6 | Mindest-Confluence eines Regel-Signals (wie im Backtest) |
 
 Hinweis: Auch Regel-Signale laufen durch den Konfidenz-Filter im Dashboard
-(Konfidenz = Confluence × 10). Min. Konfidenz 60 % entspricht Confluence 6.
+(Konfidenz = Confluence × 10). Min. Konfidenz 60 % entspricht Confluence 6
+(`MIN_CONFIDENCE`, Default 60 – vorher 70, damit fielen alle reinen RSI-Signale weg).
+
+**Confluence (seit 10.10.2026):** Basis 5. Trend + MACD in dieselbe Richtung +2,
+ein RSI-Extrem in **dieselbe** Richtung +1 (Gegenrichtung zählt nicht mehr),
+Bollinger-Ausbruch +1 nur in Signalrichtung (beim reinen RSI-Signal: auf der
+überdehnten Seite). Reines RSI-Signal = 6. Bei völlig flachem Kurs ist der RSI
+jetzt 50 statt 100 (vorher entstand daraus ein Short-Signal). Backtest und Live
+nutzen dieselbe Logik, alte Backtest-Ergebnisse sind damit nicht mehr direkt
+vergleichbar.
 
 ### Neuer Abschnitt (Tracker-Reset)
 
@@ -260,3 +271,43 @@ Knopf dafür im Konfigurations-Tab.
 Gedacht für einen sauberen Schnitt zwischen zwei Parameter-Generationen: stehen
 Trades mit alten und neuen SL/TP-Regeln in derselben Statistik, lässt sich hinterher
 nicht mehr sagen, woran ein Ergebnis lag.
+
+### Zugriffsschutz (`API_TOKEN`)
+
+Ist `API_TOKEN` gesetzt, verlangen **alle** Endpoints den Header `X-API-Token`,
+außer dem Dashboard (`/`) und `/status` (Railway-Healthcheck). Das Dashboard
+fragt einmal nach dem Token und merkt ihn sich im Browser. Ohne `API_TOKEN`
+bleibt alles offen, nur echte Orders (`/trade`, `/close/...`) sind dann gesperrt
+(403).
+
+Texte von KI und Server werden im Dashboard escaped, eingeschleustes HTML aus
+Websuche-Ergebnissen wird nur noch als Text angezeigt.
+
+### Backtest = Live-Logik (seit 10.10.2026)
+
+SL/TP aus dem ATR, nachgezogener Stop, Timeout und Einstieg (Long zum Ask,
+Short zum Bid) stehen in `handelsregeln.py`. Live-Check, Veto-Schattentrades und
+Backtest rufen dieselben Funktionen auf. Der Backtest nutzt ATR-Stops, solange
+`VOLA_ADAPTIV=true` ist und im Aufruf kein fester `sl_pct` steht. Er zeigt
+zusätzlich das Ø-Ergebnis in R pro Trade und wie die Trades enden (Ziel, Stop,
+nachgezogener Stop, Timeout). Nicht abgebildet sind Portfolio-Limits über
+mehrere Assets und das KI-Veto.
+
+### Datensicherheit
+
+Excel-Dateien und `config.json` werden atomar geschrieben (erst Temp-Datei, dann
+Austausch). Ein Absturz mitten im Speichern kann die Datei damit nicht mehr
+zerstören. Zusätzlich legt der Tracker einmal pro Tag eine Kopie in
+`<DATA_DIR>/backup/` ab, die letzten 14 bleiben erhalten. Ist die Excel trotzdem
+unlesbar, bricht jeder Schreibversuch ab, statt die Datei mit einer leeren
+Historie zu überschreiben.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+Tests mit `xfail` dokumentieren bekannte, noch offene Fehler (siehe
+`docs/ANALYSE_2026-10.md`).

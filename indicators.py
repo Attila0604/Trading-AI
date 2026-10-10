@@ -52,7 +52,9 @@ def rsi(closes: list[float], period: int = 14) -> Optional[float]:
         avg_gain = (avg_gain * (period - 1) + gains[i]) / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
     if avg_loss == 0:
-        return 100.0
+        # Völlig flacher Kurs (z.B. eingefrorener Datenfeed): weder Gewinne
+        # noch Verluste -> neutral. Vorher 100 -> "überkauft" -> Short-Signal.
+        return 50.0 if avg_gain == 0 else 100.0
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
@@ -174,22 +176,52 @@ def calculate_all_indicators(candles: list[dict]) -> dict:
     bb_data = bollinger_bands(closes)
     
     # Signal & Confluence
-    signal = "neutral"
-    confluence = 5
-    if rsi_val:
+    # Ein Indikator zählt nur dann als Bestätigung, wenn er IN Signalrichtung
+    # zeigt. Vorher hob z.B. ein überverkaufter RSI (Kaufargument) die
+    # Confluence eines Short-Signals, und ein Bollinger-Ausbruch zählte +1
+    # egal in welche Richtung.
+    rsi_richtung = None
+    if rsi_val is not None:
         if rsi_val < 30:
-            signal = "buy"; confluence += 1
+            rsi_richtung = "buy"
         elif rsi_val > 70:
-            signal = "sell"; confluence += 1
+            rsi_richtung = "sell"
+
+    trend_richtung = None
     if macd_data:
         if macd_data["trend"] == "bullish" and trend == "uptrend":
-            signal = "strong buy" if signal == "buy" else "buy"
-            confluence += 2
+            trend_richtung = "buy"
         elif macd_data["trend"] == "bearish" and trend == "downtrend":
-            signal = "strong sell" if signal == "sell" else "sell"
-            confluence += 2
-    if bb_data and bb_data["position"] in ("breakout_up", "breakout_down"):
+            trend_richtung = "sell"
+
+    signal = "neutral"
+    confluence = 5
+    if trend_richtung:
+        # Trend + MACD bestimmen die Richtung, ein RSI-Extrem in dieselbe
+        # Richtung verstärkt, eines in die Gegenrichtung zählt nicht.
+        signal = trend_richtung
+        confluence += 2
+        if rsi_richtung == trend_richtung:
+            signal = "strong " + trend_richtung
+            confluence += 1
+    elif rsi_richtung:
+        # Reines RSI-Signal (Mean Reversion) wie bisher
+        signal = rsi_richtung
         confluence += 1
+
+    # Bollinger: beim Trend-Signal bestätigt ein Ausbruch IN Trendrichtung,
+    # beim RSI-Signal (Gegenbewegung) der Ausbruch auf der überdehnten Seite
+    # (Kurs unter dem unteren Band + RSI < 30 -> Kauf).
+    if bb_data:
+        pos = bb_data["position"]
+        if trend_richtung:
+            passt = (trend_richtung == "buy" and pos == "breakout_up") or \
+                    (trend_richtung == "sell" and pos == "breakout_down")
+        else:
+            passt = (rsi_richtung == "buy" and pos == "breakout_down") or \
+                    (rsi_richtung == "sell" and pos == "breakout_up")
+        if passt:
+            confluence += 1
     confluence = min(10, max(1, confluence))
     
     ema_alignment = "mixed"

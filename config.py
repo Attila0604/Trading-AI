@@ -77,7 +77,10 @@ MAX_RISK_PCT      = _f("MAX_RISK_PCT", 2.0)
 STOP_LOSS_PCT     = _f("STOP_LOSS_PCT", 1.5)
 TAKE_PROFIT_PCT   = _f("TAKE_PROFIT_PCT", 3.0)
 POSITION_SIZE     = _f("POSITION_SIZE_EUR", 1000.0)
-MIN_CONFIDENCE    = _i("MIN_CONFIDENCE", 70)
+# 60 = Confluence 6 (Konfidenz = Confluence x 10), derselbe Wert wie
+# REGEL_MIN_CONFLUENCE und der Backtest. Mit 70 fielen alle reinen
+# RSI-Signale still weg - weder gehandelt noch als Veto protokolliert.
+MIN_CONFIDENCE    = _i("MIN_CONFIDENCE", 60)
 # Max. Haltedauer, danach wird zum Marktpreis geschlossen.
 # 45 Tage statt 14: bei Wochen-Haltedauer war der alte Timeout ein Abwürgen -
 # er hat systematisch die Gewinner gekappt (Verlierer treffen ihren SL nach
@@ -126,6 +129,12 @@ FINANZIERUNG_STANDARD = _f("SWAP_STANDARD_PCT", 0.020)
 DD_PAUSE_PCT        = _f("DD_PAUSE_PCT", 10.0)
 DD_VORSICHT_PCT     = _f("DD_VORSICHT_PCT", 5.0)
 DD_VORSICHT_FAKTOR  = _f("DD_VORSICHT_FAKTOR", 0.5)
+# Ausweg aus der Pause: Der Drawdown kommt nur aus GESCHLOSSENEN Trades. In
+# der Pause wird nichts eröffnet, also könnte er nie sinken - das System
+# stünde für immer. Deshalb: X Tage nach dem letzten Verlust im Pause-Bereich
+# wieder handeln, mit Einsatz x DD_VORSICHT_FAKTOR. Jeder weitere Verlust
+# startet die Wartezeit neu. 0 = Pause hebt sich nie von selbst auf.
+DD_PAUSE_TAGE       = _f("DD_PAUSE_TAGE", 14.0)
 # Summe aller offenen Einsätze darf diesen Anteil des Kapitals nicht
 # überschreiten (vorher: unbegrenzt, real waren 33% offen).
 MAX_EXPOSURE_PCT    = _f("MAX_EXPOSURE_PCT", 15.0)
