@@ -283,6 +283,25 @@ bleibt alles offen, nur echte Orders (`/trade`, `/close/...`) sind dann gesperrt
 Texte von KI und Server werden im Dashboard escaped, eingeschleustes HTML aus
 Websuche-Ergebnissen wird nur noch als Text angezeigt.
 
+### Backtest = Live-Logik (seit 10.10.2026)
+
+SL/TP aus dem ATR, nachgezogener Stop, Timeout und Einstieg (Long zum Ask,
+Short zum Bid) stehen in `handelsregeln.py`. Live-Check, Veto-Schattentrades und
+Backtest rufen dieselben Funktionen auf. Der Backtest nutzt ATR-Stops, solange
+`VOLA_ADAPTIV=true` ist und im Aufruf kein fester `sl_pct` steht. Er zeigt
+zusätzlich das Ø-Ergebnis in R pro Trade und wie die Trades enden (Ziel, Stop,
+nachgezogener Stop, Timeout). Nicht abgebildet sind Portfolio-Limits über
+mehrere Assets und das KI-Veto.
+
+### Datensicherheit
+
+Excel-Dateien und `config.json` werden atomar geschrieben (erst Temp-Datei, dann
+Austausch). Ein Absturz mitten im Speichern kann die Datei damit nicht mehr
+zerstören. Zusätzlich legt der Tracker einmal pro Tag eine Kopie in
+`<DATA_DIR>/backup/` ab, die letzten 14 bleiben erhalten. Ist die Excel trotzdem
+unlesbar, bricht jeder Schreibversuch ab, statt die Datei mit einer leeren
+Historie zu überschreiben.
+
 ## Tests
 
 ```bash

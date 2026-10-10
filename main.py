@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 import asyncio, os, sys, json, logging
 from datetime import datetime
 
-from config import (jetzt, utc_nach_lokal, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
+from config import (jetzt, BREAKEVEN_NACH_TAGEN, BREAKEVEN_AB_R,
                     BREAKEVEN_STOP_R, VOLA_ADAPTIV, ATR_SL_FAKTOR, ATR_TP_FAKTOR,
                     ATR_SL_MIN_PCT, ATR_SL_MAX_PCT)
 
@@ -26,6 +26,8 @@ from demo_tracker import (
 from money_management import get_modi, MODI
 from backtest import vergleiche_modi, optimiere_parameter
 from indicators import calculate_all_indicators
+import handelsregeln as hr
+from utils.dateien import atomar_schreiben
 
 # stream=sys.stdout: vorher ging alles auf stderr und Railway markierte JEDE
 # Zeile als "error" (943 von 1001 Log-Zeilen). Jetzt nur echte Fehler rot.
@@ -105,8 +107,10 @@ def config_laden():
 def config_speichern_datei():
     """Aktuelle Config auf Platte schreiben."""
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(active_config, f, ensure_ascii=False, indent=2)
+        def schreiben(pfad):
+            with open(pfad, "w", encoding="utf-8") as f:
+                json.dump(active_config, f, ensure_ascii=False, indent=2)
+        atomar_schreiben(CONFIG_FILE, schreiben)   # nie eine halbe config.json
         log.info(f"⚙️ Config gespeichert: {CONFIG_FILE}")
         return True
     except Exception as e:
@@ -196,275 +200,134 @@ def ergebnis_check_job():
         asyncio.run(_pruefe_vetos(vetos))
 
 
+def _zeit(wert):
+    try:
+        s = str(wert or "").strip()
+        return datetime.fromisoformat(s) if s else None
+    except Exception:
+        return None
+
+
+async def _markt_lage(asset: str, action: str) -> tuple:
+    """Momentanpreis der Schließ-Seite (Long: Bid, Short: Ask) + Stundenkerzen."""
+    epic  = asset_to_epic(asset)
+    preis = await capital.get_prices(epic)
+    if hr.ist_long(action):
+        kurs = preis.get("bid") or preis.get("ask")
+    else:
+        kurs = preis.get("ask") or preis.get("bid")
+    try:
+        kerzen = await capital.get_historical_prices(epic, "HOUR", 200)
+    except Exception as ce:
+        log.warning(f"Kerzen-Fetch {asset} fehlgeschlagen: {ce}")
+        kerzen = []
+    return (float(kurs) if kurs else None), kerzen
+
+
+def _bewerte_zeile(z: dict, kurs, kerzen) -> dict:
+    """Excel-Zeile (Trade oder Veto) -> handelsregeln.bewerte_position."""
+    return hr.bewerte_position(
+        entry=float(z.get("Entry-Price", 0) or 0),
+        action=str(z.get("Action", "buy")).lower(),
+        sl_pct=float(z.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT),
+        tp_pct=float(z.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT),
+        einsatz=float(z.get("Einsatz", 0) or 0),
+        geoeffnet=_zeit(z.get("Geöffnet am")),
+        be_seit=_zeit(z.get("BE-Seit")),
+        be_stop=float(z.get("BE-Stop", 0) or 0),
+        kerzen=kerzen, kurs=kurs, jetzt_=jetzt(),
+    )
+
+
 async def _pruefe_vetos(vetos: list):
     """
-    Rechnet für jedes blockierte Signal aus, ob es SL oder TP getroffen hätte -
-    mit derselben Kerzen-Logik wie bei echten Trades (Stundenkerzen seit
-    Eröffnung, beide in einer Kerze -> konservativ SL, Timeout zum Marktpreis).
-    Einziger Unterschied: kein nachgezogener Stop. Keine Wirkung auf Kapital.
+    Rechnet für jedes blockierte Signal aus, was es gebracht HÄTTE - mit exakt
+    derselben Logik wie bei echten Trades (handelsregeln.bewerte_position),
+    inklusive nachgezogenem Stop. Vorher fehlte der Stop-Nachzug bei den Vetos,
+    der Vergleich "Veto hilft / schadet" war dadurch verzerrt.
+    Keine Wirkung auf Kapital.
     """
     if not capital.is_connected():
         await capital.connect()
     for v in vetos:
         vid = v.get("ID", "?")
         try:
-            asset  = str(v.get("Asset", "")).strip()
-            entry  = float(v.get("Entry-Price", 0) or 0)
-            action = str(v.get("Action", "buy")).lower()
-            sl_pct = float(v.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT)
-            tp_pct = float(v.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT)
-            einsatz = float(v.get("Einsatz", 0) or 0)
-            if entry <= 0 or einsatz <= 0:
+            if float(v.get("Entry-Price", 0) or 0) <= 0 or float(v.get("Einsatz", 0) or 0) <= 0:
                 continue
-            try:
-                geoeffnet = datetime.fromisoformat(str(v.get("Geöffnet am", "")))
-            except Exception:
-                continue
-            alter_std = (jetzt() - geoeffnet).total_seconds() / 3600
-            long_ = action in ("buy", "long")
-            sl_level = entry * (1 - sl_pct / 100) if long_ else entry * (1 + sl_pct / 100)
-            tp_level = entry * (1 + tp_pct / 100) if long_ else entry * (1 - tp_pct / 100)
-
-            epic  = asset_to_epic(asset)
-            preis = await capital.get_prices(epic)
-            kurs  = float((preis.get("bid") if long_ else preis.get("ask")) or preis.get("bid") or preis.get("ask") or 0)
-            try:
-                kerzen = await capital.get_historical_prices(epic, "HOUR", 200)
-            except Exception:
-                kerzen = []
-
-            treffer = None
-            for c in kerzen:
-                try:
-                    ct = utc_nach_lokal(datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0]))
-                except Exception:
-                    continue
-                if ct < geoeffnet:
-                    continue
-                hi, lo = c.get("high"), c.get("low")
-                if hi is None or lo is None:
-                    continue
-                sl_hit = lo <= sl_level if long_ else hi >= sl_level
-                tp_hit = hi >= tp_level if long_ else lo <= tp_level
-                if sl_hit:
-                    treffer = "verloren"; break
-                if tp_hit:
-                    treffer = "gewonnen"; break
-            if treffer is None and kurs > 0:
-                if (long_ and kurs <= sl_level) or (not long_ and kurs >= sl_level):
-                    treffer = "verloren"
-                elif (long_ and kurs >= tp_level) or (not long_ and kurs <= tp_level):
-                    treffer = "gewonnen"
-
-            if treffer == "gewonnen":
-                veto_schliessen(vid, "gewonnen", einsatz * (tp_pct / sl_pct), tp_level)
-            elif treffer == "verloren":
-                veto_schliessen(vid, "verloren", -einsatz, sl_level)
-            elif alter_std > MAX_TRADE_TAGE * 24 and kurs > 0:
-                pnl = pnl_aus_preis(einsatz, entry, kurs, action, sl_pct, tp_pct)
-                veto_schliessen(vid, "gewonnen" if pnl > 0 else "verloren", pnl, kurs)
+            kurs, kerzen = await _markt_lage(str(v.get("Asset", "")).strip(), str(v.get("Action", "buy")))
+            b = _bewerte_zeile(v, kurs, kerzen)
+            if b["ergebnis"]:
+                veto_schliessen(vid, b["ergebnis"], b["pnl"], b["exit"])
+            elif b["be_stop_neu"]:
+                breakeven_aktivieren(vid, b["be_stop_neu"])
         except Exception as e:
             log.error(f"Veto-Schattencheck Fehler [{vid}]: {e}")
 
 
 async def _check_trade_results(offene: list):
-    """Prüft ob SL oder TP getroffen wurde via Capital.com Preise"""
+    """Prüft offene Demo-Trades: SL/TP, nachgezogener Stop, Timeout (handelsregeln.py)."""
     if not capital.is_connected():
         await capital.connect()
 
     for trade in offene:
         try:
-            # Excel-Spalten-Keys (nicht lowercase!) - das war der Bug
+            # Excel-Spalten-Keys (nicht lowercase!)
             asset = str(trade.get("Asset", "")).strip()
             if not asset:
                 continue
-            epic     = asset_to_epic(asset)
-            trade_id = trade.get("ID", "Unbekannt")
-
+            trade_id    = trade.get("ID", "Unbekannt")
             entry_price = float(trade.get("Entry-Price", 0) or 0)
             action      = str(trade.get("Action", "buy")).lower()
-            sl_pct      = float(trade.get("SL %", STOP_LOSS_PCT) or STOP_LOSS_PCT)
-            tp_pct      = float(trade.get("TP %", TAKE_PROFIT_PCT) or TAKE_PROFIT_PCT)
             einsatz     = float(trade.get("Einsatz", 0) or 0)
 
-            price_data    = await capital.get_prices(epic)
-            current_price = price_data.get("bid") or price_data.get("ask")
+            current_price, kerzen = await _markt_lage(asset, action)
             if not current_price:
                 log.warning(f"Kein Preis für {asset}")
                 continue
-            current_price = float(current_price)
+            if entry_price <= 0:
+                kerzen = []          # ohne Entry nichts zu scannen
 
-            geoeffnet = None
-            try:
-                geoeffnet = datetime.fromisoformat(str(trade.get("Geöffnet am", "")))
-                alter_std = (jetzt() - geoeffnet).total_seconds() / 3600
-            except Exception:
-                alter_std = 0.0
-
+            b = _bewerte_zeile(trade, current_price, kerzen)
+            alter_std = b["alter_tage"] * 24
             log.info(f"🔍 {trade_id} | {asset} | Entry: {entry_price} | Aktuell: {current_price} | {alter_std:.1f}h")
-
-            ergebnis     = None
-            pnl_override = None
-            kerzen       = []
-
-            if entry_price > 0:
-                if action in ("buy", "long"):
-                    tp_level = entry_price * (1 + tp_pct / 100)
-                    sl_level = entry_price * (1 - sl_pct / 100)
-                else:
-                    tp_level = entry_price * (1 - tp_pct / 100)
-                    sl_level = entry_price * (1 + sl_pct / 100)
-
-                # ── Intraday-Erkennung: Kerzen-Highs/Lows seit Eröffnung ──────────
-                # Fängt SL/TP-Treffer, die ZWISCHEN zwei 4h-Checks passiert sind.
-                try:
-                    kerzen = await capital.get_historical_prices(epic, "HOUR", 200)
-                except Exception as ce:
-                    log.warning(f"Kerzen-Fetch {asset} fehlgeschlagen: {ce}")
-                    kerzen = []
-
-                # Kerzenzeiten kommen in UTC, Trade-Zeiten stehen in Wiener Zeit
-                # -> umrechnen, sonst klafft ein 1-2h-Loch direkt nach Eröffnung.
-                seit_open = []
-                zeit_bekannt = False
-                for c in kerzen:
-                    ct = None
-                    try:
-                        roh = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
-                        ct  = utc_nach_lokal(roh)
-                        zeit_bekannt = True
-                    except Exception:
-                        ct = None
-                    if ct is None or geoeffnet is None or ct >= geoeffnet:
-                        seit_open.append(c)
-
-                # KEIN Rückfall auf alle Kerzen: die Historie VOR der Eröffnung
-                # enthält fast sicher irgendwo einen SL- oder TP-Durchbruch und
-                # würde den Trade grundlos schließen. Lieber gar nicht scannen -
-                # der Momentanpreis unten fängt den Fall ab.
-                if seit_open:
-                    scan = seit_open
-                elif not zeit_bekannt and geoeffnet is None:
-                    scan = kerzen      # keinerlei Zeitinfo vorhanden -> alter Pfad
-                else:
-                    scan = []
-
-                treffer = None
-                for c in scan:
-                    hi, lo = c.get("high"), c.get("low")
-                    if hi is None or lo is None:
-                        continue
-                    if action in ("buy", "long"):
-                        sl_hit, tp_hit = lo <= sl_level, hi >= tp_level
-                    else:
-                        sl_hit, tp_hit = hi >= sl_level, lo <= tp_level
-                    if sl_hit and tp_hit:
-                        treffer = "verloren"   # beide in einer Kerze → konservativ SL
-                        break
-                    if tp_hit:
-                        treffer = "gewonnen"; break
-                    if sl_hit:
-                        treffer = "verloren"; break
-
-                if treffer:
-                    ergebnis = treffer
-                    log.info(f"{'✅ TP' if treffer=='gewonnen' else '❌ SL'} (Intraday) {asset} | {len(scan)} Kerzen geprüft | {entry_price:.5f}")
-                else:
-                    # Fallback: Momentanpreis (falls keine Kerzendaten verfügbar)
-                    if action in ("buy", "long"):
-                        if current_price >= tp_level:   ergebnis = "gewonnen"
-                        elif current_price <= sl_level: ergebnis = "verloren"
-                    else:
-                        if current_price <= tp_level:   ergebnis = "gewonnen"
-                        elif current_price >= sl_level: ergebnis = "verloren"
-                    if ergebnis:
-                        log.info(f"{'✅ TP' if ergebnis=='gewonnen' else '❌ SL'} (Momentanpreis) {asset} | {current_price:.5f}")
 
             # Trades ohne Einstiegspreis (z.B. aus einer Verbindungsstörung) sind
             # nicht auswertbar -> als "abgebrochen" schließen, NICHT als Verlust
             # werten, sonst verfälschen sie die Win-Rate.
-            if entry_price <= 0 and alter_std > 4:
-                trade_schliessen(trade_id, "abgebrochen", 0.0)
-                log.info(f"🗑️ {trade_id} ohne Entry-Price → abgebrochen (zählt nicht in der Statistik)")
+            if entry_price <= 0:
+                if alter_std > 4:
+                    trade_schliessen(trade_id, "abgebrochen", 0.0)
+                    log.info(f"🗑️ {trade_id} ohne Entry-Price → abgebrochen (zählt nicht in der Statistik)")
                 continue
 
-            # ── Break-even-Stop ───────────────────────────────────────────────
-            # Phase 2: BE ist aktiv → Kurs zurück am Entry = mit P&L 0 schließen
-            be_seit = None
-            try:
-                be_s = str(trade.get("BE-Seit") or "").strip()
-                be_seit = datetime.fromisoformat(be_s) if be_s else None
-            except Exception:
-                be_seit = None
+            # Stop nachziehen (nach BREAKEVEN_NACH_TAGEN und ab BREAKEVEN_AB_R im Plus)
+            if b["be_stop_neu"]:
+                neuer_stop = b["be_stop_neu"]
+                breakeven_aktivieren(trade_id, neuer_stop)
+                unreal    = einsatz * (b["unreal_r"] or 0)
+                gesichert = BREAKEVEN_STOP_R * einsatz
+                log.info(f"⚖️ {trade_id} nach {b['alter_tage']:.1f} Tagen bei €{unreal:.2f} "
+                         f"→ Stop auf {neuer_stop:.5f}")
+                send_whatsapp(
+                    f"⚖️ *Stop nachgezogen*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 {trade_id} | {asset} | {action.upper()}\n"
+                    f"📈 Entry: {entry_price:.5f} | Aktuell: {current_price:.5f}\n"
+                    f"💰 Unrealisiert: +€{unreal:.2f} nach {b['alter_tage']:.1f} Tagen\n"
+                    f"🔒 Stop auf {neuer_stop:.5f} - mindestens +€{gesichert:.2f} gesichert"
+                )
 
-            # Stop-Niveau: bei Alt-Trades ohne Spalte liegt es auf dem Entry
-            be_stop = float(trade.get("BE-Stop", 0) or 0) or entry_price
-
-            if ergebnis is None and entry_price > 0 and be_seit is not None:
-                be_hit = False
-                for c in kerzen:
-                    try:
-                        roh = datetime.fromisoformat(str(c.get("time", "")).replace("Z", "").split(".")[0])
-                        ct  = utc_nach_lokal(roh)
-                    except Exception:
-                        continue
-                    if ct < be_seit:
-                        continue
-                    hi, lo = c.get("high"), c.get("low")
-                    if hi is None or lo is None:
-                        continue
-                    if action in ("buy", "long") and lo <= be_stop:
-                        be_hit = True; break
-                    if action not in ("buy", "long") and hi >= be_stop:
-                        be_hit = True; break
-                if not be_hit:
-                    if action in ("buy", "long") and current_price <= be_stop:
-                        be_hit = True
-                    if action not in ("buy", "long") and current_price >= be_stop:
-                        be_hit = True
-                if be_hit:
-                    pnl_override = pnl_aus_preis(einsatz, entry_price, be_stop, action, sl_pct, tp_pct)
-                    ergebnis = "gewonnen" if pnl_override > 0 else "breakeven"
-                    log.info(f"⚖️ Nachgezogener Stop getroffen: {trade_id} | {asset} | "
-                             f"Stop {be_stop:.5f} | P&L €{pnl_override:.2f}")
-
-            # Phase 1: nach X Tagen und ab BREAKEVEN_AB_R Gewinn Stop nachziehen.
-            # Die Mindestschwelle ist entscheidend: ohne sie wurde schon bei
-            # vier Pips Gewinn nachgezogen und der Trade danach vom Rauschen
-            # getötet - vier von vier Auslösungen endeten bei exakt 0.
-            if (ergebnis is None and entry_price > 0 and be_seit is None
-                    and BREAKEVEN_NACH_TAGEN > 0 and alter_std > BREAKEVEN_NACH_TAGEN * 24):
-                unreal = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
-                schwelle = BREAKEVEN_AB_R * einsatz
-                if unreal >= schwelle and schwelle > 0:
-                    if action in ("buy", "long"):
-                        neuer_stop = entry_price * (1 + BREAKEVEN_STOP_R * sl_pct / 100)
-                    else:
-                        neuer_stop = entry_price * (1 - BREAKEVEN_STOP_R * sl_pct / 100)
-                    breakeven_aktivieren(trade_id, neuer_stop)
-                    gesichert = BREAKEVEN_STOP_R * einsatz
-                    log.info(f"⚖️ {trade_id} nach {alter_std/24:.1f} Tagen bei €{unreal:.2f} "
-                             f"(≥ {schwelle:.2f}) → Stop auf {neuer_stop:.5f}")
-                    send_whatsapp(
-                        f"⚖️ *Stop nachgezogen*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📊 {trade_id} | {asset} | {action.upper()}\n"
-                        f"📈 Entry: {entry_price:.5f} | Aktuell: {current_price:.5f}\n"
-                        f"💰 Unrealisiert: +€{unreal:.2f} nach {alter_std/24:.1f} Tagen\n"
-                        f"🔒 Stop auf {neuer_stop:.5f} - mindestens +€{gesichert:.2f} gesichert"
-                    )
-            # ─────────────────────────────────────────────────────────────────
-
-            # Timeout: nach MAX_TRADE_TAGE zum ECHTEN Marktpreis schließen (kein Pauschal-Verlust)
-            if ergebnis is None and alter_std > MAX_TRADE_TAGE * 24:
-                pnl_override = pnl_aus_preis(einsatz, entry_price, current_price, action, sl_pct, tp_pct)
-                ergebnis = "gewonnen" if pnl_override > 0 else "verloren"
-                log.info(f"⏰ Trade {trade_id} nach {MAX_TRADE_TAGE:.0f} Tagen zum Marktpreis geschlossen | P&L €{pnl_override:.2f}")
-
+            ergebnis = b["ergebnis"]
             if ergebnis:
+                grund_txt = {"tp": "✅ TP", "sl": "❌ SL", "be": "⚖️ Nachgezogener Stop",
+                             "timeout": f"⏰ Timeout nach {MAX_TRADE_TAGE:.0f} Tagen"}[b["grund"]]
+                log.info(f"{grund_txt} {trade_id} | {asset} | Exit {b['exit']:.5f} | P&L €{b['pnl']:.2f}")
+                # Volle TP/SL-Treffer über die gespeicherten Beträge buchen, alles andere zum Preis
+                pnl_override = None if b["grund"] in ("tp", "sl") else b["pnl"]
                 geschlossen = trade_schliessen(trade_id, ergebnis, pnl_override)
                 stats       = get_statistik()
                 pnl_wert    = float(geschlossen.get("P&L", 0) or 0)
+                ergebnis    = geschlossen.get("Status", ergebnis)
                 emoji = {"gewonnen": "✅", "verloren": "❌", "breakeven": "⚖️"}.get(ergebnis, "🗑️")
                 send_whatsapp(
                     f"{emoji} *Demo-Trade {ergebnis.upper()}*\n"
@@ -602,16 +465,14 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
         for decision in result.get("decisions", []):
             a       = decision.get("asset", "")
             atr_val = atr_lookup.get(a)
-            if VOLA_ADAPTIV and atr_val:
-                sl = max(ATR_SL_MIN_PCT, min(ATR_SL_MAX_PCT, atr_val * ATR_SL_FAKTOR))
-                tp = sl * (ATR_TP_FAKTOR / ATR_SL_FAKTOR) if ATR_SL_FAKTOR > 0 else sl * 2
-                decision["stopLoss"]   = round(sl, 2)
-                decision["takeProfit"] = round(tp, 2)
-                decision["riskReward"] = round(tp / sl, 2) if sl > 0 else 0
+            # dieselbe Rechnung wie im Backtest (handelsregeln.sl_tp_prozent)
+            sl, tp, mit_atr = hr.sl_tp_prozent(atr_val, active_config["sl_pct"], active_config["tp_pct"])
+            decision["stopLoss"]   = sl
+            decision["takeProfit"] = tp
+            decision["riskReward"] = round(tp / sl, 2) if sl > 0 else 0
+            if mit_atr:
                 sl_tp_log.append(f"{a}: ATR {atr_val:.2f}% → SL {sl:.2f}% / TP {tp:.2f}%")
             else:
-                decision["stopLoss"]   = active_config["sl_pct"]
-                decision["takeProfit"] = active_config["tp_pct"]
                 if VOLA_ADAPTIV:
                     sl_tp_log.append(f"{a}: kein ATR → fest {active_config['sl_pct']}%/{active_config['tp_pct']}%")
         if sl_tp_log:
@@ -694,7 +555,12 @@ async def run_analysis_pipeline(req: AnalyzeRequest):
                     if not epic:
                         continue
                     price_data = await capital.get_prices(epic)
-                    entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                    # Long wird zum Ask eröffnet, Short zum Bid (vorher immer Ask:
+                    # das hat jedem Short einen Spread geschenkt)
+                    if hr.ist_long(signal.get("action") or signal.get("direction")):
+                        entry_price = float(price_data.get("ask") or price_data.get("bid") or 0)
+                    else:
+                        entry_price = float(price_data.get("bid") or price_data.get("ask") or 0)
                     if entry_price > 0:
                         log.info(f"✅ Entry-Price [{asset}]: {entry_price} (Versuch {versuch+1})")
                         break
@@ -1075,7 +941,8 @@ async def backtest_optimieren(req: BacktestRequest = None):
         raise HTTPException(status_code=400, detail=f"Zu wenige Kerzen für {asset}: {len(candles) if candles else 0}")
     res = optimiere_parameter(candles, startkapital=req.startkapital,
                               mm_modus=active_config["mm_modus"],
-                              asset=asset, resolution=req.resolution)
+                              asset=asset, resolution=req.resolution,
+                              params={"risk_pct": active_config["risk_pct"]})
     res["asset"] = asset
     res["resolution"] = req.resolution
     return res
@@ -1093,6 +960,9 @@ async def backtest_starten(req: BacktestRequest = None):
     asset = req.asset or (active_config["assets"][0] if active_config["assets"] else "BTC/USD")
     sl    = req.sl_pct if req.sl_pct is not None else active_config["sl_pct"]
     tp    = req.tp_pct if req.tp_pct is not None else active_config["tp_pct"]
+    # Wie live: ATR-Stops, wenn VOLA_ADAPTIV aktiv ist - es sei denn, der
+    # Aufruf gibt ausdrücklich feste SL/TP-Werte vor.
+    stops = "fest" if (req.sl_pct is not None or not VOLA_ADAPTIV) else "atr"
 
     if not capital.is_connected():
         await capital.connect()
@@ -1104,7 +974,8 @@ async def backtest_starten(req: BacktestRequest = None):
 
     res = vergleiche_modi(candles, startkapital=req.startkapital, sl_pct=sl, tp_pct=tp,
                           min_confluence=req.min_confluence,
-                          asset=asset, resolution=req.resolution)
+                          asset=asset, resolution=req.resolution, stops=stops,
+                          params={"risk_pct": active_config["risk_pct"]})
     res["asset"]      = asset
     res["resolution"] = req.resolution
 
@@ -1114,7 +985,9 @@ async def backtest_starten(req: BacktestRequest = None):
             f"🔬 *BACKTEST {asset}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 {res['kerzen']} Kerzen ({req.resolution}) | {res['signal_trades']} Trades\n"
-            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | SL {sl}% / TP {tp}%\n"
+            f"🎯 Win Rate: {top[0]['win_rate']:.1f}% | {res['parameter']['stops_text']}\n"
+            f"📐 Ø {res['schnitt_r'] if res['schnitt_r'] is not None else '-'} R/Trade | "
+            f"Ausstiege: {', '.join(f'{k} {v}' for k, v in res['ausstiege'].items())}\n"
             f"━━━ Top Money-Management ━━━\n"
         )
         for i, r in enumerate(top, 1):

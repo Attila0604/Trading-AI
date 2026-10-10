@@ -161,9 +161,6 @@ def test_default_konfidenz_passt_zu_regel_confluence():
     assert MIN_CONFIDENCE <= REGEL_MIN_CONFLUENCE * 10
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BEFUND: Short-Einstieg wird zum ASK gebucht (ask or bid für beide Richtungen). "
-    "Ein Short wird aber zum Bid eröffnet - das schenkt jedem Short einen Spread."))
 def test_short_einstieg_zum_bid(app_env, monkeypatch):
     _pipeline_mit(monkeypatch, [_decision(richtung="short")])
     _analyse()
@@ -220,3 +217,17 @@ def test_ergebnis_check_laesst_laufenden_trade_offen(app_env):
     fake.kerzen, fake.bid = [], 1.105
     asyncio.run(main._check_trade_results(tracker.get_offene_trades()))
     assert tracker.get_statistik()["statistik"]["offen"] == 1
+
+
+def test_veto_bekommt_denselben_stopnachzug(app_env, monkeypatch):
+    """Schatten-Trades werden exakt wie echte Trades bewertet (inkl. Stop-Nachzug)."""
+    fake, _, tracker = app_env
+    tracker.veto_protokollieren({"asset": "EUR/USD", "action": "buy", "entry_price": 1.1000,
+                                 "stopLoss": 2.0, "takeProfit": 4.0, "vetoGrund": "EZB"})
+    alle = tracker._lade_trades()
+    alle[0]["Geöffnet am"] = (jetzt() - timedelta(days=20)).isoformat()
+    tracker._speichere_trades(alle)
+    fake.kerzen, fake.bid, fake.ask = [], 1.1250, 1.1252          # +1.1 R nach 20 Tagen
+    asyncio.run(main._pruefe_vetos(tracker.get_offene_vetos()))
+    v = tracker.get_offene_vetos()[0]
+    assert v["BE-Stop"] == pytest.approx(1.1 * 1.006)

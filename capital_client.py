@@ -186,12 +186,19 @@ class CapitalClient:
                         return bid if bid is not None else ask
                     return (bid + ask) / 2
                 
+                # Spread am Schluss - der Backtest steigt damit wie live ein
+                # (Long zum Ask, Short zum Bid) statt kostenlos zum Mittelkurs.
+                spread = None
+                if cp.get("bid") is not None and cp.get("ask") is not None:
+                    spread = max(0.0, cp["ask"] - cp["bid"])
+
                 candles.append({
                     "time":   p.get("snapshotTimeUTC"),
                     "open":   mid(op),
                     "high":   mid(hp),
                     "low":    mid(lp),
                     "close":  mid(cp),
+                    "spread": spread,
                     "volume": p.get("lastTradedVolume", 0),
                 })
             log.info(f"📊 {epic}: {len(candles)} Kerzen ({resolution}) geladen")

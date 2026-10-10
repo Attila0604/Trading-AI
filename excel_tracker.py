@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 import openpyxl
+from utils.dateien import atomar_speichern
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, NamedStyle
 from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.formatting.rule import (
@@ -145,7 +146,7 @@ class ExcelTracker:
         dashboard = wb["Dashboard"]
         wb.move_sheet(dashboard, offset=-(len(wb.sheetnames) - 1))
         wb.active = 0
-        wb.save(self.path)
+        atomar_speichern(wb, self.path)
         log.info("✅ Excel erstellt")
 
     # ─── Sheet: Dashboard (NEW – Premium hero page) ──────────────────────────
@@ -843,7 +844,7 @@ class ExcelTracker:
                     cell.border = thin_border(Colors.BORDER_SOFT)
                 ws.row_dimensions[row].height = 22
                 row += 1
-            wb.save(self.path)
+            atomar_speichern(wb, self.path)
         except Exception as e:
             log.error(f"save_analysis Fehler: {e}")
 
@@ -902,7 +903,7 @@ class ExcelTracker:
                 if i in (5, 11, 12):
                     cell.number_format = "€#,##0.00;[Red]-€#,##0.00"
             ws.row_dimensions[row].height = 22
-            wb.save(self.path)
+            atomar_speichern(wb, self.path)
         except Exception as e:
             log.error(f"save_trade Fehler: {e}")
 
@@ -940,7 +941,7 @@ class ExcelTracker:
             # Equity-Curve Chart auf Dashboard aktualisieren
             self._refresh_equity_chart(wb)
 
-            wb.save(self.path)
+            atomar_speichern(wb, self.path)
         except Exception as e:
             log.error(f"save_demo_snapshot Fehler: {e}")
 

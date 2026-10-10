@@ -28,6 +28,7 @@ from typing import Optional
 from openpyxl import load_workbook, Workbook
 
 from money_management import berechne_einsatz
+from utils.dateien import atomar_speichern, tages_backup
 from config import (DATA_DIR, DEMO_STARTKAPITAL as STARTKAPITAL,
                     MAX_RISK_PCT as RISIKO_PROZENT, MM_MODUS,
                     STOP_LOSS_PCT as SL_PROZENT, TAKE_PROFIT_PCT as TP_PROZENT,
@@ -85,7 +86,7 @@ def _ensure_workbook():
             del wb["Sheet"]
         ws = wb.create_sheet(SHEET_NAME)
         ws.append(COLUMNS)
-        wb.save(EXCEL_FILE)
+        atomar_speichern(wb, EXCEL_FILE)
         log.info(f"✅ Excel erstellt: {EXCEL_FILE}")
         return
 
@@ -93,37 +94,39 @@ def _ensure_workbook():
     if SHEET_NAME not in wb.sheetnames:
         ws = wb.create_sheet(SHEET_NAME)
         ws.append(COLUMNS)
-        wb.save(EXCEL_FILE)
+        atomar_speichern(wb, EXCEL_FILE)
         log.info(f"✅ Sheet '{SHEET_NAME}' erstellt")
 
 
 def _lade_trades() -> list:
-    """Lädt alle Trades als Liste von Dicts."""
+    """
+    Lädt alle Trades als Liste von Dicts.
+
+    Ein Lesefehler wird NICHT mehr verschluckt: vorher kam dann eine leere
+    Liste zurück, der nächste neue Trade wurde angehängt und die Datei mit
+    genau diesem einen Trade überschrieben - die ganze Historie wäre weg.
+    """
     _ensure_workbook()
 
     try:
         wb = load_workbook(EXCEL_FILE, data_only=True)
-        if SHEET_NAME not in wb.sheetnames:
-            return []
-
-        ws = wb[SHEET_NAME]
-        rows = list(ws.iter_rows(values_only=True))
-
-        if len(rows) < 2:
-            return []
-
-        headers = list(rows[0])
-        trades = []
-        for row in rows[1:]:
-            if all(cell is None for cell in row):
-                continue
-            trade = {h: v for h, v in zip(headers, row)}
-            trades.append(trade)
-
-        return trades
     except Exception as e:
-        log.error(f"Excel lesen Fehler: {e}")
+        log.error(f"Excel lesen Fehler: {e} - Backups liegen in {EXCEL_FILE.parent / 'backup'}")
+        raise
+    if SHEET_NAME not in wb.sheetnames:
         return []
+
+    rows = list(wb[SHEET_NAME].iter_rows(values_only=True))
+    if len(rows) < 2:
+        return []
+
+    headers = list(rows[0])
+    trades = []
+    for row in rows[1:]:
+        if all(cell is None for cell in row):
+            continue
+        trades.append({h: v for h, v in zip(headers, row)})
+    return trades
 
 
 def _speichere_trades(trades: list):
@@ -150,10 +153,12 @@ def _speichere_trades(trades: list):
             row = [trade.get(col, "") for col in COLUMNS]
             ws.append(row)
 
-        wb.save(EXCEL_FILE)
+        tages_backup(EXCEL_FILE)          # Stand VOR der Änderung, einmal pro Tag
+        atomar_speichern(wb, EXCEL_FILE)
         log.info(f"✅ Excel gespeichert: {len(trades)} Trades")
     except Exception as e:
         log.error(f"Excel speichern Fehler: {e}")
+        raise
 
 
 def _validiere_prozent(wert, default: float, max_wert: float = 20.0) -> float:
@@ -220,7 +225,7 @@ def _signalvergleich(echte: list, vetos: list) -> dict:
     """
     regel_zu = [t for t in echte if t.get("Signalquelle") == "regeln"
                 and t.get("Status") in ("gewonnen", "verloren", "breakeven")]
-    veto_zu  = [v for v in vetos if v.get("Status") in ("veto_gewonnen", "veto_verloren")]
+    veto_zu  = [v for v in vetos if v.get("Status") in ("veto_gewonnen", "veto_verloren", "veto_breakeven")]
 
     def schnitt(zeilen, key):
         rs = [r for r in (_r_wert(z.get(key), z.get("Einsatz")) for z in zeilen) if r is not None]
@@ -784,7 +789,8 @@ def breakeven_aktivieren(trade_id: str, stop_preis: float) -> dict:
     """
     trades = _lade_trades()
     for t in trades:
-        if t.get("ID") == trade_id and t.get("Status") == "offen":
+        # auch für V-Zeilen: die Schatten-Trades bekommen denselben Stop-Nachzug
+        if t.get("ID") == trade_id and t.get("Status") in ("offen", "veto_offen"):
             if str(t.get("BE-Seit") or "").strip():
                 return t
             t["BE-Seit"] = jetzt().isoformat()

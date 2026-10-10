@@ -2,7 +2,8 @@
 
 > **Update 10.10.2026:** H1–H5, H7, H8 und der Modus-Fehler „Nur Analyse“
 > (Dashboard speichert `analysis`, Backend prüfte nur `analyse`) sind behoben,
-> siehe Abschnitt 6. Offen: K1–K4, H6, H9, M1–M7.
+> siehe Abschnitt 6. In einem zweiten Schritt folgten H6, H9 und M1 (Einstieg).
+> Offen: K1–K4, M2–M7.
 
 Grundlage: vollständiges Lesen aller Module (~6.600 Zeilen), statische Prüfung
 (pyflakes) und eine neue Testsuite (`tests/`, 62 Tests). Capital.com, Claude und
@@ -11,7 +12,7 @@ geladen (keine Zugangsdaten in dieser Umgebung).
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # Stand nach den Fixes: 67 passed, 4 xfailed
+pytest -q          # aktueller Stand: 90 passed, 3 xfailed
 ```
 
 Jeder `xfail`-Test ist ein **dokumentierter Befund**: Er beschreibt das
@@ -102,3 +103,9 @@ ist so nicht einsatzfähig:
 | H7 | Dashboard: `esc()` für alle Server-/KI-Texte, IDs in `onclick` nur noch nach Whitelist. |
 | H8 | Token gilt global (außer `/` und `/status`); Excel-Download schickt den Token mit; `/trade` und `/close` ohne gesetzten `API_TOKEN` gesperrt. |
 | neu | Modus „Nur Analyse“ greift jetzt (`analysis` und `analyse`). |
+| H6 | Neues Modul `handelsregeln.py` mit SL/TP aus dem ATR, Kerzen-Treffer, nachgezogenem Stop, Timeout und R-Rechnung. Live-Check, Veto-Schatten und Backtest nutzen es gemeinsam. Der Backtest rechnet jetzt mit ATR-Stops, Stop-Nachzug, Timeout, Spread beim Einstieg und dem Risiko-Regler; Ergebnis je Trade in R mit Ausstiegsgrund. Die Optimierung variiert bei ATR-Stops die ATR-Faktoren und sortiert nach Ø R. |
+| H9 | `utils/dateien.py`: atomares Schreiben für beide Excel-Dateien und `config.json`, tägliches Backup (14 Tage). Lesefehler werden nicht mehr verschluckt, die Datei wird nie mit leerer Historie überschrieben. |
+| M1 | Short-Einstieg zum Bid, Momentanpreis beim Check je Seite (Long: Bid, Short: Ask). |
+| neu | **Live-Fehler beim nachgezogenen Stop:** Der Kerzen-Scan prüfte zuerst gegen den URSPRÜNGLICHEN SL. Fiel der Kurs zwischen zwei Checks durch den nachgezogenen Stop und weiter bis zum SL, wurde −1 R statt +0,3 R gebucht. Jetzt gilt ab BE-Seit der nachgezogene Stop. |
+| neu | Veto-Schattentrades bekommen denselben Stop-Nachzug wie echte Trades. Vorher fehlte er, der Vergleich „Veto hilft/schadet“ war verzerrt. |
+| neu | Backtest: Die Gewinn-/Verlustserie für Anti-Martingale/Kelly wurde in falscher Reihenfolge (älteste zuerst) übergeben. |

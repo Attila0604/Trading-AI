@@ -151,3 +151,26 @@ def test_max_risk_pct_wirkt_auf_einsatz(frischer_tracker, monkeypatch):
 def test_risk_pct_aus_signal_hat_vorrang(frischer_tracker):
     t = frischer_tracker.signal_oeffnen(_signal(mm_params={"risk_pct": 3.0}))
     assert t["Einsatz"] == 30.0
+
+
+# ─── Datensicherheit ─────────────────────────────────────────
+def test_kaputte_datei_wird_nicht_ueberschrieben(frischer_tracker):
+    frischer_tracker.signal_oeffnen(_signal())
+    frischer_tracker.EXCEL_FILE.write_bytes(b"kein zip")
+    with pytest.raises(Exception):
+        frischer_tracker.signal_oeffnen(_signal("XAU/USD"))
+    assert frischer_tracker.EXCEL_FILE.read_bytes() == b"kein zip"
+
+
+def test_speichern_legt_tagesbackup_an_und_hinterlaesst_keine_tempdateien(frischer_tracker):
+    frischer_tracker.signal_oeffnen(_signal())
+    frischer_tracker.trade_schliessen("T0001", "gewonnen")
+    ordner = frischer_tracker.EXCEL_FILE.parent
+    assert len(list((ordner / "backup").glob("Trading_Tracker_*.xlsx"))) == 1
+    assert not [p for p in ordner.iterdir() if p.name.startswith(".")]
+
+
+def test_veto_breakeven_zaehlt_im_vergleich(frischer_tracker):
+    frischer_tracker.veto_protokollieren(_signal(vetoGrund="CPI"))
+    frischer_tracker.veto_schliessen("V0001", "breakeven", 0.0, 1.1)
+    assert frischer_tracker.get_statistik()["signalvergleich"]["vetos_abgeschlossen"] == 1
